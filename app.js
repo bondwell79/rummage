@@ -366,29 +366,130 @@
   $('#closeModal').addEventListener('click', () => $('#productModal').classList.add('hidden'));
   $('#productModal').addEventListener('click', e => { if (e.target.id === 'productModal') $('#productModal').classList.add('hidden'); });
 
-  /* ---- Conectar peers ---- */
-  $('#makeOfferBtn').addEventListener('click', async () => {
+  /* ---- Gestión de servidores públicos de señalización ---- */
+  function renderServersModal() {
+    const list = Store.getSignalingServers();
+    const el = $('#serversList');
+    el.innerHTML = '';
+    list.forEach((s) => {
+      const li = document.createElement('li');
+      li.className = 'server-item';
+      li.innerHTML = `
+        <div class="server-info">
+          <strong>${escapeHtml(s.name)}</strong>
+          <div style="color:var(--muted);font-size:13px">${escapeHtml(s.url)}</div>
+        </div>
+        <button class="ghost" data-remove="${escapeHtml(s.url)}">🗑️ Dar de baja</button>`;
+      el.appendChild(li);
+    });
+
+    el.querySelectorAll('button[data-remove]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const url = b.dataset.remove;
+        const next = Store.saveSignalingServers(list.filter((x) => x.url !== url));
+        renderServersModal();
+        refreshServerSelect(next);
+        toast('Servidor dado de baja.');
+      });
+    });
+  }
+
+  function refreshServerSelect(list) {
+    const sel = $('#serverSelect');
+    const current = sel.value;
+    sel.innerHTML = '';
+    list.forEach((s, i) => {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = s.name + (isLocalUrl(s.url) ? ' · local' : '');
+      opt.dataset.url = s.url;
+      sel.appendChild(opt);
+    });
+    if (current !== '' && list.some((s) => s.url === current)) {
+      const idx = list.findIndex((s) => s.url === current);
+      sel.value = String(idx);
+    } else if (list.length) {
+      sel.value = '0';
+    }
+  }
+
+  function isLocalUrl(url) {
+    try { const u = new URL(url); return u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.protocol === 'file:'; }
+    catch { return false; }
+  }
+
+  /* ---- Conectar peers (señalización por servidor público) ---- */
+  function currentServer() {
+    const list = Store.getSignalingServers();
+    const sel = $('#serverSelect');
+    const idx = parseInt(sel.value, 10);
+    return list[idx] || (list[0] ? list[0] : null);
+  }
+
+  $('#editServersBtn').addEventListener('click', () => {
+    renderServersModal();
+    $('#serversModal').classList.remove('hidden');
+  });
+  $('#closeServersModal').addEventListener('click', () => $('#serversModal').classList.add('hidden'));
+  $('#serversModal').addEventListener('click', (e) => { if (e.target.id === 'serversModal') $('#serversModal').classList.add('hidden'); });
+
+  $('#addServerForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = $('#newServerName').value.trim();
+    let url = $('#newServerUrl').value.trim();
+    if (!name || !url) { toast('Rellena nombre y URL.', true); return; }
+    try { new URL(url); } catch { toast('La URL no es válida.', true); return; }
+    const list = Store.getSignalingServers();
+    list.push({ name, url });
+    Store.saveSignalingServers(list);
+    $('#addServerForm').reset();
+    renderServersModal();
+    refreshServerSelect(Store.getSignalingServers());
+    toast('Servidor añadido.');
+  });
+
+  function setPeerMode(mode) {
+    const info = $('#roomInfo');
+    if (mode === 'creating') {
+      info.classList.remove('hidden');
+      info.innerHTML = '<p class="hint">Comparte este código con la otra persona:</p><div id="codeBox" class="code-box"></div>';
+    } else if (mode === 'joining') {
+      info.classList.remove('hidden');
+      info.innerHTML = '<p class="hint">Esperando a que el peer se una... La conexión se establece automáticamente.</p>';
+    }
+  }
+
+  $('#createRoomBtn').addEventListener('click', async () => {
+    const server = currentServer();
+    if (!server) { toast('Añade al menos un servidor de señalización.', true); return; }
+    setPeerMode('creating');
     try {
-      const code = await P2P.makeOffer();
-      $('#offerOut').value = code;
-      toast('Código de oferta generado. Envíalo al otro peer.');
+      const res = await P2P.invite(server.url);
+      $('#codeBox').textContent = res.code;
+      toast('Sala creada. Comparte el código ' + res.code + '.');
     } catch (err) {
-      toast('Error al generar la oferta: ' + err.message, true);
+      toast('Error al crear la sala: ' + err.message, true);
+      setPeerMode(null);
     }
   });
 
-  /* ---- Importar la respuesta (answer) de otro peer y cerrar el handshake P2P ---- */
-  $('#offerOut').addEventListener('input', () => { $('#answerIn').value = ''; });
-  document.getElementById('answerIn').addEventListener('change', async () => {
-    const code = $('#answerIn').value.trim();
-    if (!code) { toast('Pega aquí el código de respuesta del otro peer.', true); return; }
+  $('#joinRoomBtn').addEventListener('click', async () => {
+    const server = currentServer();
+    const code = $('#roomCodeInput').value.trim().toUpperCase();
+    if (!server) { toast('Añade al menos un servidor de señalización.', true); return; }
+    if (!code) { toast('Introduce el código de sala.', true); return; }
+    setPeerMode('joining');
     try {
-      await P2P.handleAnswer(code);
-      toast('Respuesta importada. Conectando con el peer...');
+      await P2P.join(server.url, code);
+      $('#roomCodeInput').value = '';
+      toast('Conectado con el peer. Sincronizando datos...');
     } catch (err) {
-      toast('Código de respuesta no válido: ' + err.message, true);
+      toast('Error al unirse a la sala: ' + err.message, true);
+      setPeerMode(null);
     }
   });
+
+  $('#serverSelect').addEventListener('change', () => { setPeerMode(null); });
 
   /* ---- Valoraciones recibidas y resumen del perfil ---- */
   async function renderMyRating() {
@@ -438,4 +539,5 @@
   /* ---- Arranque ---- */
   await refreshCatalog();
   renderMyRating();
+  refreshServerSelect(Store.getSignalingServers());
 })();

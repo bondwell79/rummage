@@ -1,18 +1,26 @@
 /* ============================================================================
  * webrtc.js — Capa de comunicación peer-to-peer (WebRTC DataChannel)
- * Sin servidores centralizados. El "signaling" se realiza mediante códigos
- * manuales que los usuarios intercambian entre sí (tipo emparejamiento / torrent).
+ * ==========================================================================
+ * Señalización por servidor público: sustituye al antiguo intercambio manual de
+ * códigos. La aplicación se conecta a un servidor público de señalización (el
+ * "punto encuentro" temporal entre dos ordenadores) para establecer la conexión
+ * P2P. Ver signaling-server/.
+ *
+ * Modo local (sin internet): cuando el servidor es "127.0.0.1"/"localhost" se usa
+ * BroadcastChannel entre pestañas del mismo navegador como canal de señalización,
+ * para poder probar dos peers sin un servidor real.
  * ==========================================================================*/
 
 const P2P = (() => {
-  // STUN público de Google: solo ayuda a superar NATs, NO es un servidor de datos.
+  // STUN público: ayuda a superar NATs (proporciona la candidata pública). NO es
+  // un servidor de datos; los datos siguen fluyendo directo entre peers.
   const STUN_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
   let localId = '';
   let peers = new Map(); // id -> RTCConnection
   const openChannels = new Set(); // DataChannel listos para enviar
 
-  /* ---- Utilidades de codificación de códigos ---- */
+  /* ---- Utilidades de codificación de códigos manuales (legacy) ---- */
   function toCode(obj) {
     return btoa(JSON.stringify(obj)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
@@ -28,61 +36,233 @@ const P2P = (() => {
     return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
   }
 
-  /* ---- Crear el peer local ---- */
   async function initLocalId() {
     if (!localId) localId = randomId();
     return localId;
   }
 
-  /* ---- Generar una oferta (offer) para invitar a otro peer ---- */
-  async function makeOffer() {
-    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS }); // conexión "directa" sin servidor de datos
+  /* ===================== Señalización por servidor público ================= */
+  function isLocalServer(url) {
+    try {
+      const u = new URL(url);
+      return u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.protocol === 'file:';
+    } catch { return false; }
+  }
+
+  function serverBase(url) {
+    try { return new URL('/api/session', url).href.replace(/\/$/, ''); }
+    catch { return '/api/session'; }
+  }
+
+  async function apiPost(baseUrl, code, payload) {
+    const base = serverBase(baseUrl);
+    const res = await fetch(base + (code ? '/' + code : ''), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    });
+    if (!res.ok) throw new Error('error del servidor (' + res.status + ')');
+    return res.json();
+  }
+
+  async function apiGet(baseUrl, code) {
+    const base = serverBase(baseUrl);
+    const res = await fetch(base + '/' + code, { method: 'GET' });
+    if (!res.ok) throw new Error('error del servidor (' + res.status + ')');
+    return res.json();
+  }
+
+  // Polling periódico contra el servidor hasta que haya algo o cancelemos.
+  async function pollFor(baseUrl, code, predicate, timeout = 45000) {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      try {
+        const data = await apiGet(baseUrl, code);
+        if (predicate(data)) return data;
+      } catch (e) { /* el servidor puede responder 404 mientras espera */ }
+      if (Date.now() > deadline) throw new Error('esperando respuesta del peer...');
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+
+  function randomCode(n) {
+    const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let s = '';
+    const b = crypto.getRandomValues(new Uint8Array(n));
+    for (const x of b) s += c[x % c.length];
+    return s;
+  }
+
+  // Canal de señalización local entre pestañas (BroadcastChannel). Sin internet.
+  function startLocalSignaling(room) {
+    const bc = new BroadcastChannel('rummage-signal-' + room);
+    const handlers = {};
+    bc.onmessage = (e) => {
+      if (e.data && e.data.type && handlers[e.data.type]) handlers[e.data.type](e.data.payload);
+    };
+    function send(type, payload) { bc.postMessage({ type, payload }); }
+    return {
+      setHandlers(h) { Object.assign(handlers, h); },
+      invite(code2) { send('invite', code2); },
+      sendOffer(o) { send('offer', o); },
+      sendAnswer(a) { send('answer', a); },
+      close() { bc.close(); },
+    };
+  }
+
+  /* ---- INVITADO: crea sala + oferta, espera la respuesta del anfitrión ---- */
+  async function invite(serverUrl) {
+    await initLocalId();
+
+    if (isLocalServer(serverUrl)) {
+      const room = randomCode(6);
+      const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+      await configure(pc); // crea DataChannel de envío
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIce(pc);
+
+      let settled = false;
+      let peerPc = null;
+      const bc = startLocalSignaling(room);
+
+      // El anfitrión responderá cuando reciba la oferta. Escuchamos su respuesta.
+      const answerPromise = new Promise((resolve, reject) => {
+        const t = setTimeout(() => !settled && reject(new Error('esperando respuesta del peer...')), 45000);
+        bc.setHandlers({ answer: (a) => { if (!settled) { settled = true; clearTimeout(t); resolve(a); } } });
+      });
+
+      // Retransmitimos la oferta periódicamente hasta obtener respuesta.
+      let sending = true;
+      const broadcastOffer = () => { try { bc.sendOffer(pc.localDescription); } catch (e) {} };
+      const sendTimer = setInterval(broadcastOffer, 500);
+      broadcastOffer();
+
+      try {
+        const answer = await answerPromise;
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      } finally {
+        sending = false;
+        clearInterval(sendTimer);
+        bc.close();
+      }
+      registerPeer('server', pc);
+      return { code: room, pc };
+    }
+
+    // ---- Servidor real (polling HTTP) ----
+    const sess = await apiPost(serverUrl, null, {});
+    const code = sess.code;
+    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
     await configure(pc);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-
-    // Esperamos a que se resuelva ICE (candidates) para poder exportar el SDP completo.
     await waitForIce(pc);
 
-    const payload = { type: 'offer', sdp: pc.localDescription.sdp, from: localId };
-    return toCode(payload);
+    await apiPost(serverUrl, code, { offer: pc.localDescription });
+    const answer = await pollFor(serverUrl, code, d => d.answer, 45000);
+    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    registerPeer('server', pc);
+    return { code, pc };
   }
 
-  /* ---- Recibir una oferta y crear la respuesta (answer) ---- */
+  /* ---- ANFITIÓN: se une a una sala con un código y responde la oferta ---- */
+  async function join(serverUrl, code) {
+    await initLocalId();
+
+    if (isLocalServer(serverUrl)) {
+      const room = String(code).toUpperCase();
+      const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+      await configure(pc, false); // sin DataChannel local; se crea al recibir la del invitado
+
+      let settled = false;
+      const bc = startLocalSignaling(room);
+
+      // Escuchamos la oferta y generamos la respuesta.
+      const offerPromise = new Promise((resolveOffer) => {
+        const t = setTimeout(() => !settled && resolveOffer(null), 45000);
+        bc.setHandlers({ offer: async (o) => {
+          if (!settled) { await pc.setRemoteDescription(new RTCSessionDescription(o)); settled = true; clearTimeout(t); }
+        } });
+      });
+
+      const answerPromise = new Promise((resolveAnswer, rejectAnswer) => {
+        const t = setTimeout(() => !settled && rejectAnswer(new Error('esperando oferta del peer...')), 45000);
+        let answerSent = false;
+        offerPromise.then(async (o) => {
+          if (!o || answerSent) return;
+          try {
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            await waitForIce(pc);
+            bc.sendAnswer(pc.localDescription);
+            answerSent = true;
+          } catch (e) { rejectAnswer(e); }
+        });
+      });
+
+      // Esperamos a que la conexión se establezca (canal abierto por el invitado).
+      const connectedPromise = new Promise((resolve) => {
+        const check = setInterval(() => {
+          if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') { clearInterval(check); resolve(); }
+        }, 200);
+        setTimeout(() => { clearInterval(check); resolve(); }, 45000);
+      });
+
+      await answerPromise;
+      await connectedPromise;
+      bc.close();
+      registerPeer('server', pc);
+      return pc;
+    }
+
+    // ---- Servidor real: esperamos la oferta, respondemos ----
+    const offer = await pollFor(serverUrl, code, d => d.offer, 45000);
+    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+    await configure(pc, false);
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await waitForIce(pc);
+    await apiPost(serverUrl, code, { answer: pc.localDescription });
+    registerPeer('server', pc);
+    return pc;
+  }
+
+  /* ---- Señalización manual sin servidor (LEGACY) ---- */
+  async function makeOffer() {
+    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+    await configure(pc);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await waitForIce(pc);
+    return toCode({ type: 'offer', sdp: pc.localDescription.sdp, from: localId });
+  }
+
   async function handleOffer(offerCode) {
     const payload = fromCode(offerCode);
     if (payload.type !== 'offer') throw new Error('Código de oferta no válido.');
-
     await initLocalId();
-
     const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
-    await configure(pc, false); // sin DataChannel local; se crea al importar la respuesta
-
+    await configure(pc, false);
     await pc.setRemoteDescription(new RTCSessionDescription(payload));
     const dc = await pc.createAnswer();
     await pc.setLocalDescription(dc);
     await waitForIce(pc);
-
     registerPeer(payload.from, pc);
-    const answerPayload = { type: 'answer', sdp: pc.localDescription.sdp, from: localId };
-    return toCode(answerPayload);
+    return toCode({ type: 'answer', sdp: pc.localDescription.sdp, from: localId });
   }
 
-  /* ---- Recibir la respuesta de otro peer y cerrar el handshake ---- */
   async function handleAnswer(answerCode) {
     const payload = fromCode(answerCode);
     if (payload.type !== 'answer') throw new Error('Código de respuesta no válido.');
-
     await initLocalId();
-
     let pc = peers.get(payload.from);
     if (!pc) {
-      // Si no tenemos una conexión local pendiente, creamos un peer receptor pasivo.
       pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
       await configure(pc, false);
       registerPeer(payload.from, pc);
     }
-
     await pc.setRemoteDescription(new RTCSessionDescription(payload));
   }
 
@@ -99,13 +279,9 @@ const P2P = (() => {
 
     pc.oniceconnectionstatechange = () => {
       const st = pc.iceConnectionState;
-      if (st === 'connected' || st === 'completed') {
-        console.log('[P2P] Conexión establecida con peer');
-      } else if (st === 'failed') {
-        console.warn('[P2P] Falló la conexión ICE');
-      }
+      if (st === 'connected' || st === 'completed') console.log('[P2P] Conexión establecida con peer');
+      else if (st === 'failed') console.warn('[P2P] Falló la conexión ICE');
     };
-
     return pc;
   }
 
@@ -113,30 +289,22 @@ const P2P = (() => {
     dc.onopen = () => {
       console.log('[P2P] DataChannel abierto');
       openChannels.add(dc);
-      // Difundir inmediatamente nuestros datos locales al nuevo peer.
       const msg = JSON.stringify({ type: 'sync', data: Store.snapshot() });
       if (dc.readyState === 'open') dc.send(msg);
     };
-    dc.onclose = () => {
-      openChannels.delete(dc);
-      renderPeers();
-    };
+    dc.onclose = () => { openChannels.delete(dc); renderPeers(); };
     dc.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'sync' && typeof msg.data === 'object') {
           Store.merge(msg.data);
-          // Devolvemos también nuestros datos actualizados.
           const reply = JSON.stringify({ type: 'sync', data: Store.snapshot() });
           if (dc.readyState === 'open') dc.send(reply);
         }
-      } catch (e) {
-        console.warn('[P2P] Mensaje P2P no parseado:', e);
-      }
+      } catch (e) { console.warn('[P2P] Mensaje P2P no parseado:', e); }
     };
   }
 
-  /* ---- Difundir un mensaje por todos los canales abiertos ---- */
   function sendAll(message) {
     const payload = JSON.stringify(message);
     for (const dc of openChannels) {
@@ -147,7 +315,7 @@ const P2P = (() => {
   async function waitForIce(pc) {
     if (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'connected') return;
     await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 5000); // timeout de seguridad
+      const timer = setTimeout(resolve, 5000);
       pc.oniceconnectionstatechange = () => {
         if (['connected', 'completed', 'checking', 'disconnected'].includes(pc.iceConnectionState)) {
           clearTimeout(timer);
@@ -162,7 +330,6 @@ const P2P = (() => {
     renderPeers();
   }
 
-  /* ---- Estado de los peers conectados ---- */
   function listPeers() {
     return Array.from(peers.entries()).map(([id, pc]) => ({
       id,
@@ -171,7 +338,6 @@ const P2P = (() => {
     }));
   }
 
-  /* ---- Renderizado ligero de la lista de peers ---- */
   function renderPeers() {
     const el = document.getElementById('peersList');
     if (!el) return;
@@ -189,6 +355,8 @@ const P2P = (() => {
     makeOffer,
     handleOffer,
     handleAnswer,
+    invite,
+    join,
     listPeers,
     renderPeers,
     sendAll,

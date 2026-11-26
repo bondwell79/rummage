@@ -90,25 +90,43 @@
 
     <!-- CONECTAR PEERS -->
     <section id="tab-peers" class="panel">
-      <h2>Conectar con otro peer (sin servidor)</h2>
+      <h2>Conectar con otro peer</h2>
       <p class="hint">
-        Para conectar con otra persona necesitas intercambiar códigos manualmente.
-        No existe ningún servidor central: los datos flotan directamente entre ordenadores vía WebRTC.
+        Ya no hay que intercambiar códigos manualmente. Elige un servidor público de
+        señalización (el punto encuentro temporal entre los dos ordenadores) y crea o
+        únete a una sala: se establece la conexión P2P automáticamente y los datos se
+        sincronizan solos vía WebRTC.
       </p>
-      <div class="card steps">
-        <ol>
-          <li>Tú generas una <strong>oferta</strong> y se la envías al otro peer.</li>
-          <li>Esa persona importa tu oferta, genera su <strong>respuesta</strong> y te la devuelve.</li>
-          <li>Importas su respuesta y ¡ya estáis conectados!</li>
-        </ol>
-      </div>
+
+      <!-- Servidor de señalización -->
       <div class="card">
-        <button id="makeOfferBtn" class="primary">Generar código de oferta</button>
-        <textarea id="offerOut" placeholder="Aquí aparecerá tu código de oferta..."></textarea>
-        <label>Importar respuesta (answer):
-          <input type="text" id="answerIn" placeholder="Pega aquí el código que te envíe el otro peer" />
+        <label>Servidor público de señalización:
+          <select id="serverSelect"></select>
         </label>
+        <button id="editServersBtn" class="ghost">⚙️ Gestionar servidores</button>
+        <p class="hint" style="margin-top:8px">
+          Puedes añadir o dar de baja servidores. Los servidores locales (127.0.0.1 / localhost)
+          permiten probar la conexión entre pestañas sin internet.
+        </p>
       </div>
+
+      <!-- CREAR SALA -->
+      <div class="card">
+        <h3>Crear una sala</h3>
+        <p class="hint">Genera una sala y comparte el código con la otra persona (por chat, email, etc.).</p>
+        <button id="createRoomBtn" class="primary">Crear sala y generar código</button>
+        <div id="roomInfo" class="room-info hidden"></div>
+      </div>
+
+      <!-- UNIRSE A SALA -->
+      <div class="card">
+        <h3>Unirse a una sala</h3>
+        <p class="hint">Introduce el código que te haya dado la otra persona.</p>
+        <input type="text" id="roomCodeInput" placeholder="Código de sala (ej. K7M9P2)" />
+        <button id="joinRoomBtn" class="primary">Unirse a la sala</button>
+      </div>
+
+      <!-- Peers conectados -->
       <div class="card">
         <h3>Peers conectados</h3>
         <ul id="peersList"></ul>
@@ -144,6 +162,21 @@
     <div class="modal-card">
       <button class="close-btn" id="closeModal">&times;</button>
       <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <!-- Modal de gestión de servidores públicos -->
+  <div id="serversModal" class="modal hidden">
+    <div class="modal-card">
+      <button class="close-btn" id="closeServersModal">&times;</button>
+      <h3>Servidores públicos de señalización</h3>
+      <p class="hint">Añade servidores o elimina los que ya no quieras usar. Cada sala usa el servidor seleccionado.</p>
+      <ul id="serversList" class="servers-list"></ul>
+      <form id="addServerForm" class="add-server-form">
+        <input type="text" id="newServerName" placeholder="Nombre (ej. Público Cloudflare)" />
+        <input type="url" id="newServerUrl" placeholder="https://signal.ejemplo.com" required />
+        <button type="submit" class="primary">Añadir servidor</button>
+      </form>
     </div>
   </div>
 

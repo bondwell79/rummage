@@ -97,9 +97,31 @@ const Store = (() => {
     return localProfile;
   }
   function loadProfile() {
-    const raw = localStorage.getItem('hercules-profile');
+    const raw = localStorage.getItem('rummage-profile');
     if (raw) localProfile = JSON.parse(raw);
     return localProfile;
+  }
+
+  /* ---- Servidores públicos de señalización (lista editable) ---- */
+  const SERVERS_KEY = 'rummage-signaling-servers';
+  const DEFAULT_SERVERS = [
+    { name: 'Público Cloudflare', url: 'https://signal.cloudflarercs.com' },
+    { name: 'Públo de prueba', url: 'http://localhost:8787' },
+  ];
+
+  function getSignalingServers() {
+    let raw = localStorage.getItem(SERVERS_KEY);
+    if (!raw) {
+      localStorage.setItem(SERVERS_KEY, JSON.stringify(DEFAULT_SERVERS));
+      return DEFAULT_SERVERS.slice();
+    }
+    try { return JSON.parse(raw); } catch { return DEFAULT_SERVERS.slice(); }
+  }
+
+  function saveSignalingServers(list) {
+    const clean = list.filter(s => s && typeof s.url === 'string' && !!s.url.trim());
+    localStorage.setItem(SERVERS_KEY, JSON.stringify(clean));
+    return clean;
   }
 
   /* ---- Diffusión de datos entre peers ---- */
@@ -139,5 +161,6 @@ const Store = (() => {
     addDeal, getDeals, updateDeal,
     saveProfile, loadProfile,
     snapshot, merge, broadcast,
+    getSignalingServers, saveSignalingServers,
   };
 })();
