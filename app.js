@@ -448,48 +448,49 @@
     toast('Servidor añadido.');
   });
 
-  function setPeerMode(mode) {
-    const info = $('#roomInfo');
-    if (mode === 'creating') {
-      info.classList.remove('hidden');
-      info.innerHTML = '<p class="hint">Comparte este código con la otra persona:</p><div id="codeBox" class="code-box"></div>';
-    } else if (mode === 'joining') {
-      info.classList.remove('hidden');
-      info.innerHTML = '<p class="hint">Esperando a que el peer se una... La conexión se establece automáticamente.</p>';
+  /* ---- Conexía automática por presencia (sin salas ni códigos) ---- */
+  let autoConnecting = false;
+
+  function refreshAutoStatus() {
+    const st = P2P.autoConnectState();
+    const el = $('#autoStatus');
+    if (st.active && st.count > 0) {
+      el.textContent = `Conexía activa: ${st.count} peer(s) detectado(s). La sincronización es automática.`;
+    } else if (st.active) {
+      el.textContent = 'Buscando peers disponibles...';
+    } else {
+      el.textContent = 'No estás conectado a ningún peer.';
     }
   }
 
-  $('#createRoomBtn').addEventListener('click', async () => {
+  $('#autoConnectBtn').addEventListener('click', async () => {
     const server = currentServer();
     if (!server) { toast('Añade al menos un servidor de señalización.', true); return; }
-    setPeerMode('creating');
+
+    if (P2P.autoConnectState().active) {
+      // Desconectar de la búsqueda automática.
+      P2P.stopAutoConnect();
+      autoConnecting = false;
+      $('#autoConnectBtn').textContent = '🔗 Conectar automáticamente';
+      toast('Búsqueda automática detenida.');
+      refreshAutoStatus();
+      return;
+    }
+
     try {
-      const res = await P2P.invite(server.url);
-      $('#codeBox').textContent = res.code;
-      toast('Sala creada. Comparte el código ' + res.code + '.');
+      await P2P.autoConnect(server.url);
+      autoConnecting = true;
+      $('#autoConnectBtn').textContent = '⏸️ Dejar de buscar peers';
+      toast('Conexía automática activada. Detectando peers...');
     } catch (err) {
-      toast('Error al crear la sala: ' + err.message, true);
-      setPeerMode(null);
+      toast('Error al conectar automáticamente: ' + err.message, true);
     }
   });
 
-  $('#joinRoomBtn').addEventListener('click', async () => {
-    const server = currentServer();
-    const code = $('#roomCodeInput').value.trim().toUpperCase();
-    if (!server) { toast('Añade al menos un servidor de señalización.', true); return; }
-    if (!code) { toast('Introduce el código de sala.', true); return; }
-    setPeerMode('joining');
-    try {
-      await P2P.join(server.url, code);
-      $('#roomCodeInput').value = '';
-      toast('Conectado con el peer. Sincronizando datos...');
-    } catch (err) {
-      toast('Error al unirse a la sala: ' + err.message, true);
-      setPeerMode(null);
-    }
-  });
+  // Refrescar el estado de conexión periódicamente (para actualizar el contador).
+  setInterval(refreshAutoStatus, 2500);
 
-  $('#serverSelect').addEventListener('change', () => { setPeerMode(null); });
+  $('#serverSelect').addEventListener('change', () => { refreshAutoStatus(); });
 
   /* ---- Valoraciones recibidas y resumen del perfil ---- */
   async function renderMyRating() {

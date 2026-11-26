@@ -90,11 +90,11 @@
 
     <!-- CONECTAR PEERS -->
     <section id="tab-peers" class="panel">
-      <h2>Conectar con otro peer</h2>
+      <h2>Conectar con otros peers</h2>
       <p class="hint">
-        Ya no hay que intercambiar códigos manualmente. Elige un servidor público de
-        señalización (el punto encuentro temporal entre los dos ordenadores) y crea o
-        únete a una sala: se establece la conexión P2P automáticamente y los datos se
+        La conexión es automática: elige un servidor público de señalización y pulsa
+        "Conectar automáticamente". La aplicación detecta sola a los demás peers conectados
+        y establece la conexión P2P por sí sola, sin salas ni códigos. Los datos se
         sincronizan solos vía WebRTC.
       </p>
 
@@ -110,20 +110,11 @@
         </p>
       </div>
 
-      <!-- CREAR SALA -->
+      <!-- CONEXÍA AUTOMÁTICA -->
       <div class="card">
-        <h3>Crear una sala</h3>
-        <p class="hint">Genera una sala y comparte el código con la otra persona (por chat, email, etc.).</p>
-        <button id="createRoomBtn" class="primary">Crear sala y generar código</button>
-        <div id="roomInfo" class="room-info hidden"></div>
-      </div>
-
-      <!-- UNIRSE A SALA -->
-      <div class="card">
-        <h3>Unirse a una sala</h3>
-        <p class="hint">Introduce el código que te haya dado la otra persona.</p>
-        <input type="text" id="roomCodeInput" placeholder="Código de sala (ej. K7M9P2)" />
-        <button id="joinRoomBtn" class="primary">Unirse a la sala</button>
+        <h3>Conexía automática</h3>
+        <button id="autoConnectBtn" class="primary">🔗 Conectar automáticamente</button>
+        <p class="hint" style="margin-top:10px" id="autoStatus">No estás conectado a ningún peer.</p>
       </div>
 
       <!-- Peers conectados -->

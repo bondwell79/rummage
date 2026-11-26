@@ -110,6 +110,104 @@ const P2P = (() => {
     };
   }
 
+  /* ===================== Conexía automática por presencia ================= */
+  // Cada peer se registra como "disponible" en el servidor (presencia). La
+  // aplicación detecta sola a los demás peers y establece la conexión P2P por
+  // sí sola, sin salas ni códigos. El servidor reutiliza el sessionId de
+  // presencia como código de sesión WebRTC para el handshake offer/answer.
+  let autoConn = null; // { serverUrl, peerId, mySessionId, connected:Set, stop:bool }
+
+  async function apiPostPeer(baseUrl) {
+    const res = await fetch(new URL('/api/peer', baseUrl).href, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    if (!res.ok) throw new Error('error del servidor (' + res.status + ')');
+    return res.json();
+  }
+
+  async function apiGetPeers(baseUrl, exclude) {
+    const u = new URL('/api/peers', baseUrl);
+    if (exclude) u.searchParams.set('exclude', exclude);
+    const res = await fetch(u.href, { method: 'GET' });
+    if (!res.ok) throw new Error('error del servidor (' + res.status + ')');
+    return res.json();
+  }
+
+  async function apiDeletePeer(baseUrl, peerId) {
+    const res = await fetch(new URL('/api/peer/' + peerId, baseUrl).href, { method: 'DELETE' });
+    if (!res.ok && res.status !== 404) throw new Error('error del servidor (' + res.status + ')');
+  }
+
+  // Establece una conexión P2P con un peer remoto dado un código de sesión.
+  // El peer con menor peerId actúa como anfitrión (publica la oferta); el otro
+  // responde con la respuesta. Ambos usan el mismo código de sesión.
+  async function establishConnection(serverUrl, code, isInviter) {
+    if (isInviter) {
+      const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+      await configure(pc); // crea DataChannel de envío
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIce(pc);
+      await apiPost(serverUrl, code, { offer: pc.localDescription });
+      const answer = await pollFor(serverUrl, code, d => d.answer, 45000);
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      registerPeer(code, pc);
+    } else {
+      const offer = await pollFor(serverUrl, code, d => d.offer, 45000);
+      const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+      await configure(pc, false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await waitForIce(pc);
+      await apiPost(serverUrl, code, { answer: pc.localDescription });
+      registerPeer(code, pc);
+    }
+  }
+
+  // Registra presencia y conecta automáticamente con los peers detectados.
+  async function autoConnect(serverUrl) {
+    if (autoConn && !autoConn.stop) return autoConn;
+    const reg = await apiPostPeer(serverUrl);
+    autoConn = { serverUrl, peerId: reg.peerId, mySessionId: reg.sessionId, connected: new Set(), stop: false };
+
+    async function pollPeers() {
+      if (autoConn.stop) return;
+      try {
+        const list = await apiGetPeers(serverUrl, autoConn.peerId);
+        for (const p of list) {
+          if (autoConn.connected.has(p.peerId)) continue;
+          // Determinístico: el peer con menor ID es el anfitrión de la sesión.
+          const isInviter = autoConn.peerId < p.peerId;
+          const code = isInviter ? autoConn.mySessionId : p.sessionId;
+          try {
+            await establishConnection(serverUrl, code, isInviter);
+            autoConn.connected.add(p.peerId);
+          } catch (e) { console.warn('[P2P] Auto-connect con ' + p.peerId + ' falló:', e.message); }
+        }
+      } catch (e) { /* error transitorio de red */ }
+      if (!autoConn.stop) setTimeout(pollPeers, 2000);
+    }
+    pollPeers();
+    return autoConn;
+  }
+
+  // Detiene el descubrimiento automático y da de baja la presencia.
+  function stopAutoConnect() {
+    if (autoConn) {
+      autoConn.stop = true;
+      const prev = autoConn;
+      autoConn = null;
+      apiDeletePeer(prev.serverUrl, prev.peerId).catch(() => {});
+    }
+  }
+
+  // Estado del descubrimiento automático (para UI).
+  function autoConnectState() {
+    if (!autoConn || autoConn.stop) return { active: false, count: 0 };
+    return { active: true, count: autoConn.connected.size };
+  }
+
   /* ---- INVITADO: crea sala + oferta, espera la respuesta del anfitrión ---- */
   async function invite(serverUrl) {
     await initLocalId();
@@ -357,6 +455,9 @@ const P2P = (() => {
     handleAnswer,
     invite,
     join,
+    autoConnect,
+    stopAutoConnect,
+    autoConnectState,
     listPeers,
     renderPeers,
     sendAll,
