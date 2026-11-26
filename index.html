@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>rummage — Compraventa P2P</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⚡</span>
+      <h1>rummage</h1>
+      <span class="badge" id="p2pBadge">sin servidores · P2P</span>
+    </div>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="marketplace">🛍️ Catálogo</button>
+      <button class="tab" data-tab="publish">➕ Publicar</button>
+      <button class="tab" data-tab="deals">🤝 Ofertas</button>
+      <button class="tab" data-tab="peers">🔗 Conectar</button>
+      <button class="tab" data-tab="profile">👤 Perfil</button>
+    </nav>
+
+    <div class="userbox">
+      <span id="userIdLabel" title="Tu ID de peer"></span>
+    </div>
+  </header>
+
+  <main>
+    <!-- CATÁLOGO -->
+    <section id="tab-marketplace" class="panel active">
+      <div class="toolbar">
+        <input type="search" id="searchInput" placeholder="Buscar productos..." />
+        <select id="categoryFilter"><option value="">Todas las categorías</option></select>
+        <select id="sortFilter">
+          <option value="newest">Más recientes</option>
+          <option value="price-asc">Precio: menor a mayor</option>
+          <option value="price-desc">Precio: mayor a menor</option>
+        </select>
+      </div>
+      <div id="catalog" class="grid"></div>
+    </section>
+
+    <!-- PUBLICAR -->
+    <section id="tab-publish" class="panel">
+      <h2>Publicar un anuncio</h2>
+      <form id="publishForm" class="card form-card">
+        <label>Nombre del producto *
+          <input type="text" name="title" required maxlength="80" />
+        </label>
+        <label>Categoría
+          <select name="category">
+            <option>Tecnología</option>
+            <option>Hogar</option>
+            <option>Vehículos</option>
+            <option>Moda</option>
+            <option>Deportes</option>
+            <option>Juguetes</option>
+            <option>Libros</option>
+            <option>Otros</option>
+          </select>
+        </label>
+        <label>Precio (EUR) *
+          <input type="number" name="price" required min="0" step="0.01" />
+        </label>
+        <label>Estado
+          <select name="condition">
+            <option>Nuevo</option>
+            <option>Como nuevo</option>
+            <option>Buen estado</option>
+            <option>Usado</option>
+          </select>
+        </label>
+        <label>Descripción
+          <textarea name="description" rows="4"></textarea>
+        </label>
+        <label>Imagen
+          <input type="file" name="image" accept="image/*" />
+        </label>
+        <button type="submit" class="primary">Publicar anuncio</button>
+      </form>
+    </section>
+
+    <!-- OFERTAS -->
+    <section id="tab-deals" class="panel">
+      <h2>Mis ofertas y tratos</h2>
+      <div id="dealsList" class="list"></div>
+    </section>
+
+    <!-- CONECTAR PEERS -->
+    <section id="tab-peers" class="panel">
+      <h2>Conectar con otro peer (sin servidor)</h2>
+      <p class="hint">
+        Para conectar con otra persona necesitas intercambiar códigos manualmente.
+        No existe ningún servidor central: los datos flotan directamente entre ordenadores vía WebRTC.
+      </p>
+      <div class="card steps">
+        <ol>
+          <li>Tú generas una <strong>oferta</strong> y se la envías al otro peer.</li>
+          <li>Esa persona importa tu oferta, genera su <strong>respuesta</strong> y te la devuelve.</li>
+          <li>Importas su respuesta y ¡ya estáis conectados!</li>
+        </ol>
+      </div>
+      <div class="card">
+        <button id="makeOfferBtn" class="primary">Generar código de oferta</button>
+        <textarea id="offerOut" placeholder="Aquí aparecerá tu código de oferta..."></textarea>
+        <label>Importar respuesta (answer):
+          <input type="text" id="answerIn" placeholder="Pega aquí el código que te envíe el otro peer" />
+        </label>
+      </div>
+      <div class="card">
+        <h3>Peers conectados</h3>
+        <ul id="peersList"></ul>
+      </div>
+    </section>
+
+    <!-- PERFIL -->
+    <section id="tab-profile" class="panel">
+      <div class="card profile-card">
+        <h2>Tu perfil</h2>
+        <label>Nombre de usuario *
+          <input type="text" id="profileName" maxlength="40" />
+        </label>
+        <label>Foto de perfil
+          <input type="file" id="profileImage" accept="image/*" />
+        </label>
+        <button id="saveProfileBtn" class="primary">Guardar perfil</button>
+        <div class="rating-summary">
+          <h3>Tu puntuación media</h3>
+          <div id="myRatingSummary" class="rating-display"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Valoraciones que has recibido</h3>
+        <ul id="reviewsReceived" class="review-list"></ul>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal de detalle del producto -->
+  <div id="productModal" class="modal hidden">
+    <div class="modal-card">
+      <button class="close-btn" id="closeModal">&times;</button>
+      <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="webrtc.js"></script>
+  <script src="store.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
