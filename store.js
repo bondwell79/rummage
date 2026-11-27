@@ -179,7 +179,7 @@ const Store = (() => {
   /* ---- Servidores públicos de señalización (lista editable) ---- */
   const SERVERS_KEY = 'rummage-signaling-servers';
   const DEFAULT_SERVERS = [
-    { name: 'rummage.website:8080', url: 'https://rummage.website:8080' },
+    { name: 'rummage.website:443', url: 'https://rummage.website:443' },
   ];
   const OLD_DEFAULT_URLS = new Set([
     'https://signal.cloudflarercs.com',
