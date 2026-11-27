@@ -19,6 +19,14 @@ const P2P = (() => {
   let localId = '';
   let peers = new Map(); // id -> RTCConnection
   const openChannels = new Set(); // DataChannel listos para enviar
+  const channelPeerIds = new Map(); // DataChannel -> ID de usuario remoto
+  const channelsByPeerId = new Map(); // ID de usuario remoto -> DataChannel
+  const transferTotals = { sent: 0, received: 0 };
+
+  function payloadByteLength(data) {
+    if (typeof data === 'string') return new TextEncoder().encode(data).byteLength;
+    return data?.byteLength || data?.size || 0;
+  }
 
   /* ---- Utilidades de codificación de códigos manuales (legacy) ---- */
   function toCode(obj) {
@@ -202,9 +210,11 @@ const P2P = (() => {
   // Establece una conexión P2P con un peer remoto dado un código de sesión.
   // El peer con menor peerId actúa como anfitrión (publica la oferta); el otro
   // responde con la respuesta. Ambos usan el mismo código de sesión.
-  async function establishConnection(serverUrl, code, isInviter) {
+  async function establishConnection(serverUrl, code, isInviter, presencePeerId = '', connection = null) {
     console.log('[P2P] establishConnection', { code, isInviter });
     const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+    pc._presencePeerId = presencePeerId;
+    pc._autoConnection = connection;
     const localRole = isInviter ? 'offerer' : 'answerer';
     const pollRemoteCandidates = configureIceSignaling(pc, serverUrl, code, localRole);
 
@@ -237,35 +247,39 @@ const P2P = (() => {
       pollRemoteCandidates();
       registerPeer(code, pc);
     }
+    pc._autoConnectReady = true;
   }
 
   // Registra presencia y conecta automáticamente con los peers detectados.
   async function autoConnect(serverUrl) {
     if (autoConn && !autoConn.stop) return autoConn;
     const reg = await apiPostPeer(serverUrl);
-    autoConn = { serverUrl, peerId: reg.peerId, mySessionId: reg.sessionId, connected: new Set(), foundCount: 0, stop: false };
+    autoConn = { serverUrl, peerId: reg.peerId, mySessionId: reg.sessionId, connected: new Set(), retryAt: new Map(), foundCount: 0, stop: false };
 
-    async function pollPeers() {
-      if (autoConn.stop) return;
+    async function pollPeers(connection) {
+      if (connection.stop || autoConn !== connection) return;
       try {
-        const list = await apiGetPeers(serverUrl, autoConn.peerId);
-        autoConn.foundCount = list.length;
-        console.log('[P2P] pollPeers: myPeerId=', autoConn.peerId, 'mySessionId=', autoConn.mySessionId, 'peers=', list);
+        const list = await apiGetPeers(serverUrl, connection.peerId);
+        connection.foundCount = list.length;
+        console.log('[P2P] pollPeers: myPeerId=', connection.peerId, 'mySessionId=', connection.mySessionId, 'peers=', list);
         for (const p of list) {
-          if (autoConn.connected.has(p.peerId)) continue;
+          if (connection.connected.has(p.peerId) || (connection.retryAt.get(p.peerId) || 0) > Date.now()) continue;
+          connection.retryAt.delete(p.peerId);
+          connection.connected.add(p.peerId);
           // Determinístico: el peer con menor ID es el anfitrión de la sesión.
-          const isInviter = autoConn.peerId < p.peerId;
-          const code = isInviter ? autoConn.mySessionId : p.sessionId;
+          const isInviter = connection.peerId < p.peerId;
+          const code = isInviter ? connection.mySessionId : p.sessionId;
           console.log('[P2P] Intentando conectar con', p.peerId, 'isInviter=', isInviter, 'code=', code);
-          try {
-            await establishConnection(serverUrl, code, isInviter);
-            autoConn.connected.add(p.peerId);
-          } catch (e) { console.warn('[P2P] Auto-connect con ' + p.peerId + ' falló:', e.message); }
+          establishConnection(serverUrl, code, isInviter, p.peerId, connection).catch((e) => {
+            connection.connected.delete(p.peerId);
+            connection.retryAt.set(p.peerId, Date.now() + 5000);
+            console.warn('[P2P] Auto-connect con ' + p.peerId + ' falló:', e.message);
+          });
         }
       } catch (e) { /* error transitorio de red */ }
-      if (!autoConn.stop) setTimeout(pollPeers, 2000);
+      if (!connection.stop && autoConn === connection) setTimeout(() => pollPeers(connection), 2000);
     }
-    pollPeers();
+    pollPeers(autoConn);
     return autoConn;
   }
 
@@ -460,20 +474,31 @@ const P2P = (() => {
     pc.ondatachannel = (event) => {
       if (event.channel && event.channel.label === 'rummage' && !event.channel._bound) {
         event.channel._bound = true;
-        bindChannel(event.channel);
+        bindChannel(event.channel, pc);
       }
     };
-    if (sendChannel) bindChannel(sendChannel);
+    if (sendChannel) bindChannel(sendChannel, pc);
 
     pc.oniceconnectionstatechange = () => {
       const st = pc.iceConnectionState;
       if (st === 'connected' || st === 'completed') console.log('[P2P] Conexión establecida con peer');
-      else if (st === 'failed') console.warn('[P2P] Falló la conexión ICE');
+      else if (st === 'failed' || st === 'closed') {
+        console.warn('[P2P] Falló la conexión ICE');
+        releaseAutoPeer(pc);
+      }
     };
     return pc;
   }
 
-  function bindChannel(dc) {
+  function releaseAutoPeer(pc) {
+    const connection = pc._autoConnection;
+    const peerId = pc._presencePeerId;
+    if (!connection || !peerId || !pc._autoConnectReady) return;
+    connection.connected.delete(peerId);
+    connection.retryAt.set(peerId, Date.now() + 5000);
+  }
+
+  function bindChannel(dc, pc) {
     const incomingTransfers = new Map();
     dc.bufferedAmountLowThreshold = 256 * 1024;
 
@@ -481,21 +506,36 @@ const P2P = (() => {
       console.log('[P2P] DataChannel abierto');
       openChannels.add(dc);
       try {
-        const data = await Store.snapshot();
-        await sendChannelMessage(dc, { type: 'sync', data });
+        await sendChannelMessage(dc, { type: 'hello', peerId: localId });
       } catch (error) {
-        console.warn('[P2P] No se pudo enviar el snapshot inicial:', error.message);
+        console.warn('[P2P] No se pudo identificar el peer remoto:', error.message);
       }
     };
     dc.onclose = () => {
       openChannels.delete(dc);
+      releaseAutoPeer(pc);
+      const peerId = channelPeerIds.get(dc);
+      channelPeerIds.delete(dc);
+      if (peerId && channelsByPeerId.get(peerId) === dc) channelsByPeerId.delete(peerId);
       for (const transfer of incomingTransfers.values()) clearTimeout(transfer.timer);
       incomingTransfers.clear();
       renderPeers();
     };
     dc.onmessage = async (event) => {
+      transferTotals.received += payloadByteLength(event.data);
       try {
         let msg = JSON.parse(event.data);
+        if (msg.type === 'hello' && typeof msg.peerId === 'string' && msg.peerId && msg.peerId !== localId) {
+          channelPeerIds.set(dc, msg.peerId);
+          channelsByPeerId.set(msg.peerId, dc);
+          const data = await Store.snapshot(msg.peerId);
+          await sendChannelMessage(dc, { type: 'sync', data });
+          return;
+        }
+        if (msg.type === 'deal-message' && msg.message) {
+          await Store.merge({ messages: [msg.message] }, channelPeerIds.get(dc));
+          return;
+        }
         if (msg.type === 'sync-chunk') {
           if (!Number.isInteger(msg.index) || !Number.isInteger(msg.total) ||
               msg.index < 0 || msg.index >= msg.total || msg.total > 8192 ||
@@ -523,9 +563,10 @@ const P2P = (() => {
           msg = JSON.parse(transfer.parts.join(''));
         }
         if (msg.type === 'sync' && msg.data && typeof msg.data === 'object') {
-          const changed = await Store.merge(msg.data);
+          const peerId = channelPeerIds.get(dc);
+          const changed = await Store.merge(msg.data, peerId);
           if (changed && dc.readyState === 'open') {
-            const data = await Store.snapshot();
+            const data = await Store.snapshot(peerId);
             await sendChannelMessage(dc, { type: 'sync', data });
           }
         }
@@ -552,7 +593,10 @@ const P2P = (() => {
           if (dc.readyState !== 'open' || dc.bufferedAmount <= dc.bufferedAmountLowThreshold) check();
         });
       }
-      if (dc.readyState === 'open') dc.send(data);
+      if (dc.readyState === 'open') {
+        dc.send(data);
+        transferTotals.sent += payloadByteLength(data);
+      }
     }
 
     if (payload.length <= chunkSize) return sendRaw(payload);
@@ -573,6 +617,17 @@ const P2P = (() => {
     await Promise.all(Array.from(openChannels, (dc) => sendChannelMessage(dc, message)));
   }
 
+  async function sendToPeer(peerId, message) {
+    const dc = channelsByPeerId.get(peerId);
+    if (!dc || dc.readyState !== 'open') return false;
+    await sendChannelMessage(dc, message);
+    return true;
+  }
+
+  function connectedPeerIds() {
+    return Array.from(channelsByPeerId.keys());
+  }
+
   function registerPeer(id, pc) {
     peers.set(id, pc);
     renderPeers();
@@ -584,6 +639,14 @@ const P2P = (() => {
       label: 'Peer ' + id.slice(0, 6),
       state: pc.iceConnectionState,
     }));
+  }
+
+  function connectionStatus() {
+    return { openChannels: openChannels.size };
+  }
+
+  function getTransferTotals() {
+    return { ...transferTotals };
   }
 
   function renderPeers() {
@@ -608,9 +671,13 @@ const P2P = (() => {
     autoConnect,
     stopAutoConnect,
     autoConnectState,
+    connectionStatus,
+    transferTotals: getTransferTotals,
     listPeers,
     renderPeers,
     sendAll,
+    sendToPeer,
+    connectedPeerIds,
     get localId() { return localId; },
   };
 })();

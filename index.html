@@ -4,27 +4,27 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>rummage — Compraventa P2P</title>
-  <link rel="stylesheet" href="styles.css?v=20261127-10" />
+  <link rel="stylesheet" href="styles.css?v=20261127-15" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="logo">⚡</span>
       <h1>rummage</h1>
-      <span class="badge" id="p2pBadge">sin servidores · P2P</span>
+      <span class="badge" id="p2pBadge">P2P directo</span>
     </div>
 
     <nav class="tabs">
       <button class="tab active" data-tab="marketplace">🛍️ Catálogo</button>
       <button class="tab" data-tab="publish">➕ Publicar</button>
       <button class="tab" data-tab="my-products">Mis anuncios</button>
-      <button class="tab" data-tab="deals">🤝 Ofertas <span id="dealsBadge" class="offer-badge" aria-live="polite" hidden>0</span></button>
-      <button class="tab" data-tab="closed-deals">Compraventas cerradas</button>
-      <button class="tab" data-tab="peers">🔗 Conectar</button>
+      <button class="tab" data-tab="deals">🤝 Tratos <span id="dealsBadge" class="offer-badge" aria-live="polite" hidden>0</span></button>
+      <button class="tab" data-tab="closed-deals">Compraventas cerradas <span id="closedDealsBadge" class="offer-badge" aria-live="polite" hidden>0</span></button>
       <button class="tab" data-tab="profile">👤 Perfil</button>
     </nav>
 
     <div class="userbox">
+      <span id="connectionStatus" class="connection-status" role="status" aria-live="polite">Estado: Perfil incompleto · ↑0 KB/s ↓0 KB/s</span>
       <span id="userIdLabel" title="Tu ID de peer"></span>
     </div>
   </header>
@@ -79,7 +79,7 @@
           <textarea name="description" rows="4"></textarea>
         </label>
         <label>Imagen
-          <input type="file" name="image" accept="image/*" />
+          <input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp,image/avif" />
         </label>
         <button type="submit" class="primary">Publicar anuncio</button>
         <button type="button" id="cancelProductEdit" class="ghost" hidden>Cancelar edición</button>
@@ -105,33 +105,6 @@
       <div id="closedDealsList" class="list"></div>
     </section>
 
-    <!-- CONECTAR PEERS -->
-    <section id="tab-peers" class="panel">
-      <h2>Conectar con otros peers</h2>
-      <p class="hint">
-        La aplicación se conecta automáticamente al servidor de señalización al iniciarse,
-        detecta otros peers y sincroniza los datos mediante WebRTC.
-      </p>
-
-      <!-- Servidor de señalización -->
-      <div class="card">
-        <label>Servidor público de señalización:
-          <select id="serverSelect"></select>
-        </label>
-        <button id="editServersBtn" class="ghost">⚙️ Gestionar servidores</button>
-        <p class="hint" style="margin-top:8px">
-          Servidor preconfigurado: 94.143.137.242:8080.
-        </p>
-      </div>
-
-      <!-- CONEXÍA AUTOMÁTICA -->
-      <div class="card">
-        <h3>Conexión automática</h3>
-        <button id="autoConnectBtn" class="primary">Conectando automáticamente...</button>
-        <p class="hint" style="margin-top:10px" id="autoStatus">Total de peers encontrados: 0</p>
-      </div>
-    </section>
-
     <!-- PERFIL -->
     <section id="tab-profile" class="panel">
       <div class="card profile-card form-card">
@@ -139,7 +112,7 @@
         <label>Nombre de usuario *
           <input type="text" id="profileName" maxlength="40" />
         </label>
-        <label>Ciudad
+        <label>Ciudad *
           <select id="profileCity">
             <option value="">Selecciona tu ciudad</option>
             <optgroup label="Andalucía">
@@ -202,14 +175,24 @@
             </optgroup>
           </select>
         </label>
-        <label>Foto de perfil
-          <input type="file" id="profileImage" accept="image/*" />
+        <label>Foto de perfil *
+          <input type="file" id="profileImage" accept="image/png,image/jpeg,image/gif,image/webp,image/avif" />
         </label>
         <div class="profile-avatar-preview" aria-label="Foto de perfil actual">
           <img id="profilePreview" alt="Foto de perfil actual" hidden />
           <span id="profileAvatarFallback" aria-hidden="true">?</span>
         </div>
-        <button id="saveProfileBtn" class="primary">Guardar perfil</button>
+        <button id="saveProfileBtn" class="primary">Guardar perfil y conectar</button>
+        <aside class="privacy-notice" aria-labelledby="privacyNoticeTitle">
+          <h3 id="privacyNoticeTitle">Privacidad y funcionamiento</h3>
+          <ol>
+            <li>No necesitas cuenta ni correo: la aplicación crea un identificador aleatorio y no verifica tu identidad. Tu alias, foto y ciudad sí se comparten con los peers.</li>
+            <li>Tu perfil se guarda en este dispositivo. Los anuncios, ofertas y mensajes también se conservan aquí y pueden sincronizarse con los peers; no se almacenan en una base de datos central.</li>
+            <li>La comunicación de la aplicación es P2P: cuando conectas, los datos se intercambian directamente entre navegadores, no a través de un servidor de contenido.</li>
+            <li>Un servidor de señalización ayuda a encontrar peers y negociar la conexión; mantiene temporalmente información de presencia y conexión en memoria, pero no guarda tus anuncios ni tu perfil.</li>
+            <li>Es un sistema seudónimo, no anonimato absoluto: los peers conectados pueden ver lo que compartes y la conexión puede revelarles tu dirección IP. Puedes borrar los datos locales desde el almacenamiento del navegador.</li>
+          </ol>
+        </aside>
         <div class="rating-summary">
           <h3>Tu puntuación media</h3>
           <div id="myRatingSummary" class="rating-display"></div>
@@ -239,26 +222,11 @@
     </div>
   </div>
 
-  <!-- Modal de gestión de servidores públicos -->
-  <div id="serversModal" class="modal hidden">
-    <div class="modal-card">
-      <button class="close-btn" id="closeServersModal">&times;</button>
-      <h3>Servidores públicos de señalización</h3>
-      <p class="hint">Añade servidores o elimina los que ya no quieras usar. Cada sala usa el servidor seleccionado.</p>
-      <ul id="serversList" class="servers-list"></ul>
-      <form id="addServerForm" class="add-server-form">
-        <input type="text" id="newServerName" placeholder="Nombre del servidor" />
-        <input type="url" id="newServerUrl" placeholder="http://host:8080" required />
-        <button type="submit" class="primary">Añadir servidor</button>
-      </form>
-    </div>
-  </div>
-
   <!-- Toast -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="webrtc.js?v=20261127-7"></script>
-  <script src="store.js?v=20261127-8"></script>
-  <script src="app.js?v=20261127-13"></script>
+  <script src="webrtc.js?v=20261127-11"></script>
+  <script src="store.js?v=20261127-11"></script>
+  <script src="app.js?v=20261127-22"></script>
 </body>
 </html>

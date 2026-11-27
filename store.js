@@ -150,8 +150,18 @@ const Store = (() => {
     const entry = { ...message, id: message.id || createId(), timestamp: Date.now() };
     await put('messages', entry);
     window.dispatchEvent(new CustomEvent('rummage:store-updated'));
-    broadcast();
-    return entry;
+    const recipientId = deal.sellerId === P2P.localId
+      ? [deal.buyerPeerId, deal.buyerId].find(peerId => peerId && peerId !== P2P.localId)
+      : deal.sellerId;
+    let sent = false;
+    if (recipientId) {
+      try {
+        sent = await P2P.sendToPeer(recipientId, { type: 'deal-message', message: entry });
+      } catch (error) {
+        console.warn('[Store] No se pudo enviar el mensaje del chat:', error);
+      }
+    }
+    return { ...entry, deliveryPending: !sent };
   }
 
   /* ---- Perfil local ---- */
@@ -205,27 +215,41 @@ const Store = (() => {
   // Envía el snapshot actual por todos los DataChannel abiertos (P2P directo).
   async function broadcast() {
     try {
-      await P2P.sendAll({ type: 'sync', data: await snapshot() });
+      await Promise.all(P2P.connectedPeerIds().map(async peerId => {
+        await P2P.sendToPeer(peerId, { type: 'sync', data: await snapshot(peerId) });
+      }));
     } catch (error) {
       console.warn('[Store] No se pudo difundir el snapshot:', error);
     }
   }
 
   /* ---- Snapshot completo para sincronizar con un peer ---- */
-  async function snapshot() {
+  async function snapshot(peerId = '') {
+    const [products, reviews, allDeals, allMessages] = await Promise.all([
+      getProducts(), getReviews(), getDeals(), getMany('messages'),
+    ]);
+    const deals = peerId
+      ? allDeals.filter(deal => [deal.sellerId, deal.buyerId, deal.buyerPeerId].includes(peerId))
+      : allDeals;
+    const sharedDealIds = new Set(deals
+      .filter(deal => deal.status === 'closed' &&
+        [deal.sellerId, deal.buyerId, deal.buyerPeerId].includes(peerId))
+      .map(deal => deal.id));
     return {
-      products: await getProducts(),
-      reviews: await getReviews(),
-      deals: await getDeals(),
-      messages: await getMany('messages'),
+      products,
+      reviews,
+      deals,
+      messages: peerId ? allMessages.filter(message => sharedDealIds.has(message.dealId)) : [],
     };
   }
 
   /* ---- Fusionar datos recibidos de otro peer (gossip/torrent) ---- */
-  async function merge(remoteData) {
+  async function merge(remoteData, peerId = '') {
     const local = await snapshot();
+    local.messages = await getMany('messages');
     let changed = false;
     const dealChanges = { added: [], updated: [] };
+    const messageChanges = { added: [] };
 
     for (const p of remoteData.products || []) {
       const existing = local.products.find(x => x.id === p.id);
@@ -253,13 +277,18 @@ const Store = (() => {
     }
     const messageIds = new Set(local.messages.map(message => message.id));
     for (const message of remoteData.messages || []) {
+      const deal = (remoteData.deals || []).find(item => item.id === message.dealId) ||
+        local.deals.find(item => item.id === message.dealId);
+      if (!peerId || !deal || deal.status !== 'closed' || message.senderId !== peerId ||
+          ![deal.sellerId, deal.buyerId, deal.buyerPeerId].includes(peerId)) continue;
       if (!messageIds.has(message.id)) {
         await put('messages', message);
         messageIds.add(message.id);
+        messageChanges.added.push(message);
         changed = true;
       }
     }
-    if (changed) window.dispatchEvent(new CustomEvent('rummage:store-updated', { detail: { dealChanges } }));
+    if (changed) window.dispatchEvent(new CustomEvent('rummage:store-updated', { detail: { dealChanges, messageChanges } }));
     return changed;
   }
 

@@ -4,11 +4,18 @@
 
 (async function init() {
   await Store.loadProfile();
+  const savedProfile = Store.loadProfile();
+  if (!(savedProfile.name?.trim() && savedProfile.city?.trim() && savedProfile.avatar)) {
+    document.querySelector('.tab.active')?.classList.remove('active');
+    document.querySelector('[data-tab="profile"]').classList.add('active');
+    document.querySelector('.panel.active')?.classList.remove('active');
+    document.getElementById('tab-profile').classList.add('active');
+  }
+
   const localId = await P2P.initLocalId();
   document.getElementById('userIdLabel').textContent = `ID: ${localId}`;
 
-  // Rellenar el nombre de usuario si ya existe en el perfil.
-  const savedProfile = Store.loadProfile();
+  // Restaurar los datos del perfil si ya existen.
   if (savedProfile.name) document.getElementById('profileName').value = savedProfile.name;
   if (savedProfile.city) document.getElementById('profileCity').value = savedProfile.city;
 
@@ -25,11 +32,16 @@
     setTimeout(() => t.classList.add('hidden'), 3200);
   };
 
+  function hasCompleteProfile(profile = Store.loadProfile()) {
+    return Boolean(profile.name?.trim() && profile.city?.trim() && profile.avatar);
+  }
+
   function renderProfilePreview(profile = Store.loadProfile()) {
     const image = $('#profilePreview');
     const fallback = $('#profileAvatarFallback');
-    if (profile.avatar) {
-      image.src = profile.avatar;
+    const imageSrc = safeImageSrc(profile.avatar);
+    if (imageSrc) {
+      image.src = imageSrc;
       image.hidden = false;
       fallback.hidden = true;
     } else {
@@ -87,8 +99,8 @@
       return;
     }
     grid.innerHTML = products.map(p => `
-      <div class="product" data-id="${p.id}">
-        <img src="${p.image || placeholderImg()}" alt="${escapeHtml(p.title)}" />
+      <div class="product" data-id="${escapeHtml(p.id)}">
+        <img src="${escapeHtml(safeImageSrc(p.image) || placeholderImg())}" alt="${escapeHtml(p.title)}" />
         <div class="body">
           <div class="title">${escapeHtml(p.title)}</div>
           <div class="price">${formatPrice(p.price)}</div>
@@ -107,14 +119,24 @@
   function renderSeller(product, reviews) {
     const name = product.authorName || 'Desconocido';
     const city = product.authorCity ? `<span class="seller-city">(${escapeHtml(product.authorCity)})</span>` : '';
-    const avatar = product.authorAvatar
-      ? `<img class="seller-avatar" src="${escapeHtml(product.authorAvatar)}" alt="Foto de ${escapeHtml(name)}" />`
+    const avatarSrc = safeImageSrc(product.authorAvatar);
+    const avatar = avatarSrc
+      ? `<img class="seller-avatar" src="${escapeHtml(avatarSrc)}" alt="Foto de ${escapeHtml(name)}" />`
       : `<span class="seller-avatar seller-avatar-fallback" aria-hidden="true">${escapeHtml(name.charAt(0).toUpperCase())}</span>`;
     const rating = avgRating(reviews, product.authorId);
     const ratingInfo = rating.count
       ? `${renderStars(Math.round(rating.avg), 'small')} <span class="seller-rating-value">${rating.avg.toFixed(1)} (${rating.count})</span>`
       : '<span class="seller-rating-empty">Sin valoraciones</span>';
     return `<div class="seller-meta">${avatar}<div class="seller-details"><div class="seller-name-line"><strong>${escapeHtml(name)}</strong>${city}</div><div class="seller-rating">${ratingInfo}</div></div></div>`;
+  }
+
+  function renderDealParticipant(name, avatarUrl, city) {
+    const displayName = name || 'Usuario';
+    const avatarSrc = safeImageSrc(avatarUrl);
+    const avatar = avatarSrc
+      ? `<img class="seller-avatar" src="${escapeHtml(avatarSrc)}" alt="Foto de ${escapeHtml(displayName)}" />`
+      : `<span class="seller-avatar seller-avatar-fallback" aria-hidden="true">${escapeHtml(displayName.charAt(0).toUpperCase())}</span>`;
+    return `<div class="seller-meta deal-participant">${avatar}<div class="seller-details"><div class="seller-name-line"><strong>${escapeHtml(displayName)}</strong></div><span class="seller-city">${escapeHtml(city || 'Ciudad no indicada')}</span></div></div>`;
   }
 
   async function renderMyProducts() {
@@ -128,7 +150,7 @@
     }
     list.innerHTML = products.map(product => `
       <article class="card my-product">
-        <img src="${escapeHtml(product.image || placeholderImg())}" alt="${escapeHtml(product.title)}" />
+        <img src="${escapeHtml(safeImageSrc(product.image) || placeholderImg())}" alt="${escapeHtml(product.title)}" />
         <div class="my-product-info">
           <strong>${escapeHtml(product.title)}</strong>
           <div class="price">${formatPrice(product.price)}</div>
@@ -183,7 +205,7 @@
 
       Store.getReviews().then(reviews => {
         $('#modalContent').innerHTML = `
-          <img src="${p.image || placeholderImg()}" alt="${escapeHtml(p.title)}" />
+          <img src="${escapeHtml(safeImageSrc(p.image) || placeholderImg())}" alt="${escapeHtml(p.title)}" />
           <div class="title" style="font-size:22px">${escapeHtml(p.title)}</div>
           <div class="price">${formatPrice(p.price)}</div>
           <div class="product-detail-meta">${escapeHtml(p.category || 'Otros')} (<span class="product-condition">${escapeHtml(p.condition || '')}</span>)</div>
@@ -243,9 +265,11 @@
         sellerId: currentProduct.authorId,
         sellerName: currentProduct.authorName,
         sellerAvatar: currentProduct.authorAvatar || '',
+        sellerCity: currentProduct.authorCity || '',
         buyerId: P2P.localId,
         buyerName: buyerProfile.name || 'invitado',
         buyerAvatar: buyerProfile.avatar || '',
+        buyerCity: buyerProfile.city || '',
         status: 'pending',
       });
       close();
@@ -274,16 +298,55 @@
     badge.hidden = activeCount === 0;
   }
 
+  const UNREAD_CHAT_MESSAGES_KEY = 'rummage-unread-chat-messages';
+  let unreadChatMessages = {};
+  try {
+    const storedUnread = JSON.parse(localStorage.getItem(UNREAD_CHAT_MESSAGES_KEY) || '{}');
+    if (storedUnread && typeof storedUnread === 'object' && !Array.isArray(storedUnread)) {
+      unreadChatMessages = storedUnread;
+    }
+  } catch {}
+
+  function unreadCountForDeal(dealId) {
+    const messageIds = unreadChatMessages[dealId];
+    return Array.isArray(messageIds) ? messageIds.length : 0;
+  }
+
+  function updateClosedDealsBadge(deals) {
+    const total = deals
+      ? deals.reduce((count, deal) => count + unreadCountForDeal(deal.id), 0)
+      : Object.values(unreadChatMessages).reduce((count, ids) => count + (Array.isArray(ids) ? ids.length : 0), 0);
+    const badge = $('#closedDealsBadge');
+    badge.textContent = String(total);
+    badge.hidden = total === 0;
+  }
+
+  function markChatRead(dealId) {
+    if (!unreadChatMessages[dealId]) return;
+    delete unreadChatMessages[dealId];
+    localStorage.setItem(UNREAD_CHAT_MESSAGES_KEY, JSON.stringify(unreadChatMessages));
+    updateClosedDealsBadge();
+  }
+
   async function renderDeals() {
-    const allDeals = await Store.getDeals();
+    const [allDeals, products] = await Promise.all([Store.getDeals(), Store.getProducts()]);
     updateDealsBadge(allDeals);
-    const deals = allDeals.filter(dealRole);
+    const deals = allDeals.filter(deal => deal.status !== 'cancelled' && dealRole(deal));
     const el = $('#dealsList');
     if (!deals.length) {
       el.innerHTML = '<p class="hint">Aún no tienes ofertas ni tratos.</p>';
       return;
     }
     el.innerHTML = deals.slice().reverse().map(d => {
+      const role = dealRole(d);
+      const product = products.find(item => item.id === d.productId);
+      const participant = role === 'received'
+        ? { name: d.buyerName, avatar: d.buyerAvatar, city: d.buyerCity }
+        : {
+            name: d.sellerName || product?.authorName,
+            avatar: d.sellerAvatar || product?.authorAvatar,
+            city: d.sellerCity || product?.authorCity,
+          };
       const statusText = {
         pending: '⏳ Pendiente',
         accepted: '✅ Aceptada',
@@ -293,9 +356,10 @@
       return `
         <div class="card">
           <strong>${escapeHtml(d.productTitle)}</strong> — ${formatPrice(d.price)}
-          <div class="meta">Oferta: <strong style="color:var(--accent)">${formatPrice(d.offerAmount)}</strong> · ${statusText}</div>
+          ${renderDealParticipant(participant.name, participant.avatar, participant.city)}
+          <div class="meta">Oferta: <strong style="color:var(--accent)">${formatPrice(d.offerAmount)}</strong> · ${escapeHtml(statusText)}</div>
           <p style="white-space:pre-wrap">${escapeHtml(d.message || '')}</p>
-          ${renderDealActions(d, dealRole(d))}
+          ${renderDealActions(d, role)}
         </div>
       `;
     }).join('');
@@ -306,6 +370,16 @@
     const deals = allDeals
       .filter(deal => deal.status === 'closed' && dealRole(deal))
       .sort((a, b) => (b.closedAt || b.updatedAt || b.timestamp) - (a.closedAt || a.updatedAt || a.timestamp));
+    const visibleDealIds = new Set(deals.map(deal => deal.id));
+    let unreadChanged = false;
+    for (const dealId of Object.keys(unreadChatMessages)) {
+      if (!visibleDealIds.has(dealId)) {
+        delete unreadChatMessages[dealId];
+        unreadChanged = true;
+      }
+    }
+    if (unreadChanged) localStorage.setItem(UNREAD_CHAT_MESSAGES_KEY, JSON.stringify(unreadChatMessages));
+    updateClosedDealsBadge(deals);
     const list = $('#closedDealsList');
     if (!deals.length) {
       list.innerHTML = '<p class="hint">Todavía no tienes compraventas cerradas.</p>';
@@ -313,18 +387,28 @@
     }
     list.innerHTML = deals.map(deal => {
       const product = products.find(item => item.id === deal.productId);
-      const otherParty = dealRole(deal) === 'received'
-        ? deal.buyerName || 'Comprador'
-        : deal.sellerName || 'Vendedor';
+      const role = dealRole(deal);
+      const participant = role === 'received'
+        ? { name: deal.buyerName || 'Comprador', avatar: deal.buyerAvatar, city: deal.buyerCity }
+        : {
+            name: deal.sellerName || product?.authorName || 'Vendedor',
+            avatar: deal.sellerAvatar || product?.authorAvatar,
+            city: deal.sellerCity || product?.authorCity,
+          };
+      const unreadCount = unreadCountForDeal(deal.id);
       return `
-        <button type="button" class="card closed-deal" data-id="${escapeHtml(deal.id)}">
-          <img class="closed-deal-image" src="${escapeHtml(product?.image || placeholderImg())}" alt="${escapeHtml(deal.productTitle || 'Producto')}" />
-          <span class="closed-deal-info"><strong>${escapeHtml(deal.productTitle || 'Producto')}</strong>
-            <span class="hint">${dealRole(deal) === 'received' ? 'Comprador' : 'Vendedor'}: ${escapeHtml(otherParty)}</span>
-          </span>
+        <div class="card closed-deal">
+          <img class="closed-deal-image" src="${escapeHtml(safeImageSrc(product?.image) || placeholderImg())}" alt="${escapeHtml(deal.productTitle || 'Producto')}" />
+          <div class="closed-deal-info"><strong>${escapeHtml(deal.productTitle || 'Producto')}</strong>
+            ${unreadCount ? `<span class="closed-deal-unread">${unreadCount} mensaje${unreadCount === 1 ? '' : 's'} nuevo${unreadCount === 1 ? '' : 's'}</span>` : ''}
+            ${renderDealParticipant(participant.name, participant.avatar, participant.city)}
+          </div>
           <span class="closed-deal-price">${formatPrice(deal.price)}</span>
-          <span class="closed-deal-open">Abrir chat →</span>
-        </button>
+          <div class="closed-deal-actions">
+            <button type="button" class="ghost closed-deal-open" data-action="open" data-id="${escapeHtml(deal.id)}">Abrir chat</button>
+            <button type="button" class="danger" data-action="delete" data-id="${escapeHtml(deal.id)}">Eliminar</button>
+          </div>
+        </div>
       `;
     }).join('');
   }
@@ -359,8 +443,9 @@
     const otherAvatar = role === 'received'
       ? deal.buyerAvatar
       : deal.sellerAvatar || product?.authorAvatar;
-    const avatarMarkup = otherAvatar
-      ? `<img class="chat-person-avatar" src="${escapeHtml(otherAvatar)}" alt="Foto de ${escapeHtml(otherParty)}" />`
+    const otherAvatarSrc = safeImageSrc(otherAvatar);
+    const avatarMarkup = otherAvatarSrc
+      ? `<img class="chat-person-avatar" src="${escapeHtml(otherAvatarSrc)}" alt="Foto de ${escapeHtml(otherParty)}" />`
       : `<span class="chat-person-avatar chat-person-fallback" aria-hidden="true">${escapeHtml(otherParty.charAt(0).toUpperCase())}</span>`;
     const messagesHtml = messages.length ? messages.map(message => `
       <div class="chat-message ${message.senderId === P2P.localId ? 'mine' : ''}">
@@ -386,11 +471,32 @@
     messageList.scrollTop = messageList.scrollHeight;
   }
 
-  $('#closedDealsList').addEventListener('click', (event) => {
+  $('#closedDealsList').addEventListener('click', async (event) => {
     const button = event.target.closest('button[data-id]');
     if (!button) return;
-    openChatDealId = button.dataset.id;
-    renderChat(openChatDealId);
+    const { id, action } = button.dataset;
+    if (action === 'delete') {
+      const deal = (await Store.getDeals()).find(item => item.id === id && item.status === 'closed' && dealRole(item));
+      if (!deal) {
+        toast('La compraventa ya no está disponible.', true);
+        await renderClosedDeals();
+        return;
+      }
+      if (!window.confirm('¿Quitar esta compraventa del historial de ambas partes?')) return;
+      const cancelled = await Store.updateDeal(id, { status: 'cancelled' });
+      if (cancelled && dealRole(deal) === 'sent' && deal.sellerId) requestReview(deal.sellerId);
+      toast(cancelled ? 'Compraventa eliminada del historial.' : 'No se pudo eliminar la compraventa.', !cancelled);
+      await renderClosedDeals();
+      await renderDeals();
+      return;
+    }
+    if (action === 'open') {
+      openChatDealId = id;
+      markChatRead(id);
+      await renderChat(openChatDealId);
+      markChatRead(id);
+      await renderClosedDeals();
+    }
   });
 
   $('#chatContent').addEventListener('submit', async (event) => {
@@ -407,6 +513,7 @@
     });
     if (!saved) { toast('No se pudo enviar el mensaje.', true); return; }
     await renderChat(openChatDealId);
+    if (saved.deliveryPending) toast('Mensaje guardado; se enviará cuando la otra persona se conecte.');
     $('#chatMessageInput').focus();
   });
 
@@ -420,22 +527,23 @@
   });
 
   function renderDealActions(deal, role) {
+    let actions = '';
     if (role === 'received' && deal.status === 'pending') {
-      return `<div style="display:flex;gap:8px">
-        <button class="primary" data-act="accept" data-id="${deal.id}">Aceptar</button>
-        <button data-act="reject" data-id="${deal.id}" style="background:#f0c9a8;color:#5a3a24;border:1px solid var(--border);padding:8px 14px;border-radius:8px;cursor:pointer">Rechazar</button>
-      </div>`;
+      actions = `
+        <button class="primary" data-act="accept" data-id="${escapeHtml(deal.id)}">Aceptar</button>
+        <button data-act="reject" data-id="${escapeHtml(deal.id)}" class="danger">Rechazar</button>`;
+    } else if (role === 'sent' && deal.status === 'pending') {
+      actions = '<span class="hint">Esperando respuesta del vendedor...</span>';
+    } else if (role === 'sent' && deal.status === 'accepted') {
+      actions = `<button data-act="buy" data-id="${escapeHtml(deal.id)}" class="primary">Confirmar compra</button>`;
+    } else if (role === 'received' && deal.status === 'accepted') {
+      actions = '<span class="hint">Esperando confirmación del comprador...</span>';
     }
-    if (role === 'sent' && deal.status === 'pending') {
-      return `<p class="hint">Esperando respuesta del vendedor...</p>`;
-    }
-    if (role === 'sent' && deal.status === 'accepted') {
-      return `<div style="display:flex;gap:8px">
-        <button data-act="buy" data-id="${deal.id}" class="primary">Confirmar compra</button>
-      </div>`;
-    }
-    if (role === 'received' && deal.status === 'accepted') return '<p class="hint">Esperando confirmación del comprador...</p>';
-    return '';
+    const deleteButton = deal.status === 'closed'
+      ? ''
+      : `<button data-act="delete" data-id="${escapeHtml(deal.id)}" class="danger">Eliminar</button>`;
+    if (!actions && !deleteButton) return '';
+    return `<div class="deal-actions">${actions}${deleteButton}</div>`;
   }
 
   /* ---- Acciones de ofertas (delegación de eventos) ---- */
@@ -445,7 +553,17 @@
     const id = btn.dataset.id;
     const act = btn.dataset.act;
 
-    if (act === 'accept') await Store.updateDeal(id, { status: 'accepted' });
+    if (act === 'delete') {
+      const deal = (await Store.getDeals()).find(item => item.id === id && dealRole(item) && item.status !== 'closed' && item.status !== 'cancelled');
+      if (!deal) {
+        toast('El trato ya no está disponible.', true);
+        await renderDeals();
+        return;
+      }
+      if (!window.confirm('¿Eliminar este trato para ambas partes?')) return;
+      const cancelled = await Store.updateDeal(id, { status: 'cancelled' });
+      toast(cancelled ? 'Trato eliminado.' : 'No se pudo eliminar el trato.', !cancelled);
+    } else if (act === 'accept') await Store.updateDeal(id, { status: 'accepted' });
     else if (act === 'reject') await Store.updateDeal(id, { status: 'rejected' });
     else if (act === 'buy') {
       const deals = await Store.getDeals();
@@ -465,8 +583,6 @@
       if (!closed) { toast('No se pudo cerrar la compraventa.', true); return; }
       if (deal.productId) await Store.deleteProduct(deal.productId);
       toast('¡Compra registrada! Gracias por tu compra.');
-      // Pedir valoración del vendedor tras cerrar la compra.
-      if (deal && deal.sellerId) requestReview(deal.sellerId);
     }
     renderDeals();
     renderClosedDeals();
@@ -536,10 +652,20 @@
   }
 
   /* ---- Perfil ---- */
+  let profileImageSavePromise = Promise.resolve();
+  let profileCitySavePromise = Promise.resolve();
+  $('#profileCity').addEventListener('change', (event) => {
+    profileCitySavePromise = Store.saveProfile({ city: event.target.value });
+  });
+
   $('#saveProfileBtn').addEventListener('click', async () => {
+    await Promise.all([profileImageSavePromise, profileCitySavePromise]);
     const name = document.getElementById('profileName').value.trim();
     if (!name) { toast('Introduce un nombre de usuario.', true); return; }
     const city = document.getElementById('profileCity').value;
+    const currentProfile = Store.loadProfile();
+    if (!city) { toast('Selecciona tu ciudad.', true); return; }
+    if (!currentProfile.avatar) { toast('Añade una foto de perfil.', true); return; }
     const profile = await Store.saveProfile({ name, city });
     await Store.updateProductsByAuthor(P2P.localId, {
       authorName: profile.name,
@@ -547,21 +673,28 @@
       authorCity: profile.city || '',
     });
     renderProfilePreview(profile);
-    toast('Perfil guardado.');
+    toast('Perfil guardado. Conectando...');
+    await startAutoConnection(true);
   });
 
-  document.getElementById('profileImage').addEventListener('change', async (e) => {
+  document.getElementById('profileImage').addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const dataUrl = await readFileAsDataURL(file);
-    const profile = await Store.saveProfile({ avatar: dataUrl });
-    await Store.updateProductsByAuthor(P2P.localId, {
-      authorName: profile.name,
-      authorAvatar: profile.avatar,
-      authorCity: profile.city || '',
-    });
-    renderProfilePreview(profile);
-    toast('Foto de perfil actualizada.');
+    profileImageSavePromise = (async () => {
+      try {
+        const dataUrl = await readFileAsDataURL(file);
+        const profile = await Store.saveProfile({ avatar: dataUrl });
+        await Store.updateProductsByAuthor(P2P.localId, {
+          authorName: profile.name,
+          authorAvatar: profile.avatar,
+          authorCity: profile.city || '',
+        });
+        renderProfilePreview(profile);
+        toast('Foto de perfil actualizada.');
+      } catch {
+        toast('No se pudo cargar la foto de perfil.', true);
+      }
+    })();
   });
 
   /* ---- Publicar anuncio ---- */
@@ -628,7 +761,13 @@
 
     let image = existing?.image || '';
     const file = form.querySelector('[name=image]').files[0];
-    if (file) image = await readFileAsDataURL(file);
+    if (file) {
+      try { image = await readFileAsDataURL(file); }
+      catch {
+        toast('Usa PNG, JPEG, GIF, WebP o AVIF de hasta 5 MB.', true);
+        return;
+      }
+    }
 
     const productData = {
       title,
@@ -678,131 +817,69 @@
     }
   });
 
-  /* ---- Gestión de servidores públicos de señalización ---- */
-  function renderServersModal() {
-    const list = Store.getSignalingServers();
-    const el = $('#serversList');
-    el.innerHTML = '';
-    list.forEach((s) => {
-      const li = document.createElement('li');
-      li.className = 'server-item';
-      li.innerHTML = `
-        <div class="server-info">
-          <strong>${escapeHtml(s.name)}</strong>
-          <div style="color:var(--muted);font-size:13px">${escapeHtml(s.url)}</div>
-        </div>
-        <button class="ghost" data-remove="${escapeHtml(s.url)}">🗑️ Dar de baja</button>`;
-      el.appendChild(li);
-    });
+  /* ---- Conexión automática tras completar el perfil ---- */
+  let connectionError = false;
+  let connectionStartPromise = null;
+  let lastTransferTotals = P2P.transferTotals();
+  let lastTransferAt = performance.now();
+  let transferRates = { sent: 0, received: 0 };
 
-    el.querySelectorAll('button[data-remove]').forEach((b) => {
-      b.addEventListener('click', async () => {
-        const url = b.dataset.remove;
-        const next = Store.saveSignalingServers(list.filter((x) => x.url !== url));
-        renderServersModal();
-        refreshServerSelect(next);
-        toast('Servidor dado de baja.');
-      });
-    });
+  function refreshConnectionStatus() {
+    const now = performance.now();
+    const totals = P2P.transferTotals();
+    const seconds = Math.max((now - lastTransferAt) / 1000, 0.001);
+    transferRates = {
+      sent: (totals.sent - lastTransferTotals.sent) / 1024 / seconds,
+      received: (totals.received - lastTransferTotals.received) / 1024 / seconds,
+    };
+    lastTransferTotals = totals;
+    lastTransferAt = now;
+
+    const profile = Store.loadProfile();
+    const discovery = P2P.autoConnectState();
+    const status = P2P.connectionStatus();
+    const el = $('#connectionStatus');
+    let label;
+    let state = 'offline';
+    if (!hasCompleteProfile(profile)) label = 'Perfil incompleto';
+    else if (connectionError) { label = 'Error de conexión'; state = 'error'; }
+    else if (status.openChannels) {
+      label = `Conectado (${status.openChannels})`;
+      state = 'connected';
+    } else if (discovery.active) {
+      label = discovery.count ? `Conectando (${discovery.count} detectados)` : 'Buscando peers';
+      state = 'connecting';
+    } else label = 'Desconectado';
+    el.dataset.state = state;
+    el.textContent = `Estado: ${label} · ↑${transferRates.sent.toFixed(1)} KB/s ↓${transferRates.received.toFixed(1)} KB/s`;
   }
 
-  function refreshServerSelect(list) {
-    const sel = $('#serverSelect');
-    const current = sel.value;
-    sel.innerHTML = '';
-    list.forEach((s, i) => {
-      const opt = document.createElement('option');
-      opt.value = String(i);
-      opt.textContent = s.name + (isLocalUrl(s.url) ? ' · local' : '');
-      opt.dataset.url = s.url;
-      sel.appendChild(opt);
-    });
-    if (current !== '' && list.some((s) => s.url === current)) {
-      const idx = list.findIndex((s) => s.url === current);
-      sel.value = String(idx);
-    } else if (list.length) {
-      sel.value = '0';
-    }
-  }
-
-  function isLocalUrl(url) {
-    try { const u = new URL(url); return u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.protocol === 'file:'; }
-    catch { return false; }
-  }
-
-  /* ---- Conectar peers (señalización por servidor público) ---- */
-  function currentServer() {
-    const list = Store.getSignalingServers();
-    const sel = $('#serverSelect');
-    const idx = parseInt(sel.value, 10);
-    return list[idx] || (list[0] ? list[0] : null);
-  }
-
-  $('#editServersBtn').addEventListener('click', () => {
-    renderServersModal();
-    $('#serversModal').classList.remove('hidden');
-  });
-  $('#closeServersModal').addEventListener('click', () => $('#serversModal').classList.add('hidden'));
-  $('#serversModal').addEventListener('click', (e) => { if (e.target.id === 'serversModal') $('#serversModal').classList.add('hidden'); });
-
-  $('#addServerForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const name = $('#newServerName').value.trim();
-    let url = $('#newServerUrl').value.trim();
-    if (!name || !url) { toast('Rellena nombre y URL.', true); return; }
-    try { new URL(url); } catch { toast('La URL no es válida.', true); return; }
-    const list = Store.getSignalingServers();
-    list.push({ name, url });
-    Store.saveSignalingServers(list);
-    $('#addServerForm').reset();
-    renderServersModal();
-    refreshServerSelect(Store.getSignalingServers());
-    toast('Servidor añadido.');
-  });
-
-  /* ---- Conexión automática por presencia (sin salas ni códigos) ---- */
-
-  function refreshAutoStatus() {
-    const st = P2P.autoConnectState();
-    const el = $('#autoStatus');
-    el.textContent = `Total de peers encontrados: ${st.count}`;
-  }
-
-  async function startAutoConnection() {
-    const server = currentServer();
-    if (!server) { toast('No hay servidor de señalización configurado.', true); return; }
-
-    try {
-      $('#autoConnectBtn').textContent = 'Conectando automáticamente...';
-      await P2P.autoConnect(server.url);
-      $('#autoConnectBtn').textContent = '⏸️ Dejar de buscar peers';
-      refreshAutoStatus();
-    } catch (err) {
-      $('#autoConnectBtn').textContent = '🔗 Conectar automáticamente';
-      toast('Error al conectar automáticamente: ' + err.message, true);
-    }
-  }
-
-  $('#autoConnectBtn').addEventListener('click', async () => {
-    const server = currentServer();
-    if (!server) { toast('Añade al menos un servidor de señalización.', true); return; }
-
-    if (P2P.autoConnectState().active) {
-      // Desconectar de la búsqueda automática.
-      P2P.stopAutoConnect();
-      $('#autoConnectBtn').textContent = '🔗 Conectar automáticamente';
-      toast('Búsqueda automática detenida.');
-      refreshAutoStatus();
+  async function startAutoConnection(notifyError = false) {
+    if (!hasCompleteProfile()) {
+      refreshConnectionStatus();
       return;
     }
+    if (connectionStartPromise) return connectionStartPromise;
 
-    await startAutoConnection();
-  });
+    connectionError = false;
+    connectionStartPromise = (async () => {
+      try {
+        const server = Store.getSignalingServers()[0];
+        if (!server) throw new Error('No hay servidor de señalización configurado.');
+        await P2P.autoConnect(server.url);
+      } catch (error) {
+        connectionError = true;
+        if (notifyError) toast('Error al conectar: ' + error.message, true);
+      } finally {
+        connectionStartPromise = null;
+        refreshConnectionStatus();
+      }
+    })();
+    refreshConnectionStatus();
+    return connectionStartPromise;
+  }
 
-  // Refrescar el estado de conexión periódicamente (para actualizar el contador).
-  setInterval(refreshAutoStatus, 2500);
-
-  $('#serverSelect').addEventListener('change', () => { refreshAutoStatus(); });
+  setInterval(refreshConnectionStatus, 1000);
 
   /* ---- Valoraciones recibidas y resumen del perfil ---- */
   async function renderMyRating() {
@@ -837,7 +914,15 @@
     if (str == null) return '';
     return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
   }
+  function safeImageSrc(value) {
+    if (typeof value !== 'string' || value.length > 7_000_000) return '';
+    return /^data:image\/(?:png|jpeg|gif|webp|avif);base64,[A-Za-z0-9+/]+={0,2}$/i.test(value) ? value : '';
+  }
   function readFileAsDataURL(file) {
+    const allowedTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']);
+    if (!allowedTypes.has(file.type) || file.size > 5 * 1024 * 1024) {
+      return Promise.reject(new Error('formato o tamaño de imagen no válido'));
+    }
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
@@ -848,6 +933,24 @@
 
   /* ---- Arranque ---- */
   window.addEventListener('rummage:store-updated', (event) => {
+    const incomingMessages = event.detail?.messageChanges?.added || [];
+    let unreadChanged = false;
+    for (const message of incomingMessages) {
+      if (message.senderId === P2P.localId ||
+          (openChatDealId === message.dealId && !$('#chatModal').classList.contains('hidden'))) continue;
+      const messageIds = Array.isArray(unreadChatMessages[message.dealId])
+        ? unreadChatMessages[message.dealId]
+        : (unreadChatMessages[message.dealId] = []);
+      if (!messageIds.includes(message.id)) {
+        messageIds.push(message.id);
+        unreadChanged = true;
+      }
+    }
+    if (unreadChanged) {
+      localStorage.setItem(UNREAD_CHAT_MESSAGES_KEY, JSON.stringify(unreadChatMessages));
+      updateClosedDealsBadge();
+    }
+
     refreshCatalog();
     renderMyProducts();
     renderDeals();
@@ -875,7 +978,7 @@
       ...updatedDeals.filter(change => change.current.status === 'accepted' && change.previous.status !== 'accepted').map(change => change.current),
     ].some(isCurrentBuyer);
     const newIncomingOffer = addedDeals.some(d => dealRole(d) === 'received' && d.status === 'pending');
-    if (acceptedForBuyer) toast('¡El vendedor ha aceptado tu oferta! Confirma la compra en Ofertas.');
+    if (acceptedForBuyer) toast('¡El vendedor ha aceptado tu oferta! Confirma la compra en Tratos.');
     else if (newIncomingOffer) toast('Has recibido una nueva oferta.');
   });
 
@@ -884,6 +987,6 @@
   await renderDeals();
   await renderClosedDeals();
   renderMyRating();
-  refreshServerSelect(Store.getSignalingServers());
-  startAutoConnection();
+  refreshConnectionStatus();
+  if (hasCompleteProfile()) startAutoConnection();
 })();

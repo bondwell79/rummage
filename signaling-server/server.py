@@ -115,12 +115,8 @@ class SignalingHandler(BaseHTTPRequestHandler):
             with lock:
                 s = sessions.get(code)
                 if not s:
-                    print(f"[signal] GET session {code} -> 404 not found")
                     return self._send(404, {"error": "sesión no encontrada"})
                 s["lastSeen"] = time.time()
-                has_offer = s["offer"] is not None
-                has_answer = s["answer"] is not None
-                print(f"[signal] GET session {code} -> offer={has_offer} answer={has_answer}")
                 return self._send(200, {"code": code, "offer": s["offer"], "answer": s["answer"], "candidates": s.get("candidates", [])})
 
         # GET /api/session/:code/candidates
@@ -176,10 +172,8 @@ class SignalingHandler(BaseHTTPRequestHandler):
                     return self._send(404, {"error": "sesión no encontrada"})
                 if "offer" in body:
                     s["offer"] = body["offer"]
-                    print(f"[signal] POST offer -> session {code}")
                 if "answer" in body:
                     s["answer"] = body["answer"]
-                    print(f"[signal] POST answer -> session {code}")
                 if "candidate" in body:
                     s.setdefault("candidates", []).append(body["candidate"])
                 s["lastSeen"] = time.time()
