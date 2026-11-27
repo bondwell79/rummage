@@ -32,7 +32,7 @@ const HOST = '0.0.0.0';
 const TTL_MS = 15 * 60 * 1000; // 15 minutos
 
 /* ---- Almacén de sesiones (en memoria) ---- */
-const sessions = new Map(); // code -> { offer, answer, lastSeen }
+const sessions = new Map(); // code -> { offer, answer, candidates: [], lastSeen }
 
 /* ---- Almacén de presencia (peers disponibles para conexión automática) ---- */
 const peersPresence = new Map(); // peerId -> { sessionId, lastSeen }
@@ -76,10 +76,22 @@ function readBody(req) {
       try { resolve(data ? JSON.parse(data) : {}); }
       catch { resolve({}); }
     });
+    req.on('error', (err) => {
+      if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') console.error('[signal] readBody error:', err);
+      resolve({});
+    });
   });
 }
 
 const server = http.createServer(async (req, res) => {
+  // Silenciar errores de conexión abrupta del cliente (ECONNRESET, EPIPE)
+  req.on('error', (err) => {
+    if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') console.error('[signal] req error:', err);
+  });
+  res.on('error', (err) => {
+    if (err.code !== 'ECONNRESET' && err.code !== 'EPIPE') console.error('[signal] res error:', err);
+  });
+
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   // CORS: la aplicación se sirve desde un origen distinto (p. ej.
@@ -96,7 +108,9 @@ const server = http.createServer(async (req, res) => {
   const send = (code, obj) => {
     const body = JSON.stringify(obj);
     res.writeHead(code, Object.assign({ 'Content-Type': 'application/json' }, corsHeaders));
-    res.end(body);
+    res.end(body, (err) => {
+      if (err && err.code !== 'ECONNRESET' && err.code !== 'EPIPE') console.error('[signal] send error:', err);
+    });
   };
 
   // Respuesta a peticiones preflight CORS.
@@ -111,6 +125,7 @@ const server = http.createServer(async (req, res) => {
     const peerId = shortPeerId();
     const sessionId = shortCode();
     peersPresence.set(peerId, { sessionId, lastSeen: Date.now() });
+    sessions.set(sessionId, { offer: null, answer: null, candidates: [], lastSeen: Date.now() });
     return send(201, { peerId, sessionId });
   }
 
@@ -139,8 +154,35 @@ const server = http.createServer(async (req, res) => {
   // POST /api/session -> crear sesión
   if (req.method === 'POST' && url.pathname === '/api/session') {
     const code = shortCode();
-    sessions.set(code, { offer: null, answer: null, lastSeen: Date.now() });
+    sessions.set(code, { offer: null, answer: null, candidates: [], lastSeen: Date.now() });
     return send(201, { code, sessionId: code });
+  }
+
+  // GET /api/session/:code/candidates
+  const mCand = url.pathname.match(/^\/api\/session\/([A-Z0-9]+)\/candidates$/i);
+  if (mCand) {
+    const code = mCand[1].toUpperCase();
+    const s = sessions.get(code);
+    if (!s) return send(404, { error: 'sesión no encontrada' });
+
+    if (req.method === 'GET') {
+      s.lastSeen = Date.now();
+      const sender = url.searchParams.get('from');
+      const candidates = (s.candidates || [])
+        .filter((item) => item.from === sender)
+        .map((item) => item.candidate);
+      return send(200, { candidates });
+    }
+    if (req.method === 'POST') {
+      const body = await readBody(req);
+      if (!['offerer', 'answerer'].includes(body.from) || !body.candidate || typeof body.candidate !== 'object') {
+        return send(400, { error: 'candidato ICE no válido' });
+      }
+      s.candidates = s.candidates || [];
+      s.candidates.push({ from: body.from, candidate: body.candidate });
+      s.lastSeen = Date.now();
+      return send(200, { ok: true });
+    }
   }
 
   // Ruta /api/session/:code
@@ -152,7 +194,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET') {
       if (!s) return send(404, { error: 'sesión no encontrada' });
       s.lastSeen = Date.now();
-      return send(200, { code, offer: s.offer, answer: s.answer });
+      return send(200, { code, offer: s.offer, answer: s.answer, candidates: s.candidates || [] });
     }
 
     if (req.method === 'POST') {
@@ -160,8 +202,12 @@ const server = http.createServer(async (req, res) => {
       if (!s) return send(404, { error: 'sesión no encontrada' });
       if (body.offer !== undefined) s.offer = body.offer;
       if (body.answer !== undefined) s.answer = body.answer;
+      if (body.candidate) {
+        s.candidates = s.candidates || [];
+        s.candidates.push(body.candidate);
+      }
       s.lastSeen = Date.now();
-      return send(200, { code, offer: s.offer, answer: s.answer });
+      return send(200, { code, offer: s.offer, answer: s.answer, candidates: s.candidates || [] });
     }
 
     if (req.method === 'DELETE') {

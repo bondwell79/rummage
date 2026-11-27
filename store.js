@@ -5,11 +5,19 @@
 
 const Store = (() => {
   const DB_NAME = 'rummage-db';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   let dbPromise = null;
 
+  function createId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
   /* ---- Datos locales del usuario actual ---- */
-  let localProfile = { name: '', avatar: '' };
+  let localProfile = { name: '', avatar: '', city: '' };
 
   async function openDb() {
     if (dbPromise) return dbPromise;
@@ -17,7 +25,7 @@ const Store = (() => {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = (e) => {
         const db = req.result;
-        ['products', 'reviews', 'deals'].forEach((name) => {
+        ['products', 'reviews', 'deals', 'messages'].forEach((name) => {
           if (!db.objectStoreNames.contains(name)) {
             db.createObjectStore(name, { keyPath: 'id' });
           }
@@ -60,16 +68,49 @@ const Store = (() => {
 
   /* ---- Productos (anuncios) ---- */
   async function addProduct(product) {
-    const p = { ...product, id: product.id || crypto.randomUUID(), timestamp: Date.now() };
+    const timestamp = Date.now();
+    const p = { ...product, id: product.id || createId(), timestamp, updatedAt: timestamp, revision: 0, deleted: false };
     await put('products', p);
     broadcast();
     return p;
   }
   async function getProducts() { return getMany('products'); }
+  async function updateProduct(id, patch) {
+    const products = await getProducts();
+    const product = products.find(item => item.id === id && !item.deleted);
+    if (!product) return false;
+    const updatedAt = Math.max(Date.now(), (product.updatedAt || product.timestamp || 0) + 1);
+    await put('products', { ...product, ...patch, updatedAt, revision: (product.revision || 0) + 1 });
+    window.dispatchEvent(new CustomEvent('rummage:store-updated'));
+    broadcast();
+    return true;
+  }
+  async function deleteProduct(id) {
+    const products = await getProducts();
+    const product = products.find(item => item.id === id && !item.deleted);
+    if (!product) return false;
+    const updatedAt = Math.max(Date.now(), (product.updatedAt || product.timestamp || 0) + 1);
+    await put('products', { ...product, deleted: true, updatedAt, revision: (product.revision || 0) + 1 });
+    window.dispatchEvent(new CustomEvent('rummage:store-updated'));
+    broadcast();
+    return true;
+  }
+  async function updateProductsByAuthor(authorId, patch) {
+    const products = await getProducts();
+    const owned = products.filter(product => product.authorId === authorId && !product.deleted);
+    for (const product of owned) {
+      const updatedAt = Math.max(Date.now(), (product.updatedAt || product.timestamp || 0) + 1);
+      await put('products', { ...product, ...patch, updatedAt, revision: (product.revision || 0) + 1 });
+    }
+    if (owned.length) {
+      window.dispatchEvent(new CustomEvent('rummage:store-updated'));
+      broadcast();
+    }
+  }
 
   /* ---- Valoraciones (estrellas) ---- */
   async function addReview(review) {
-    const r = { ...review, id: review.id || crypto.randomUUID(), timestamp: Date.now() };
+    const r = { ...review, id: review.id || createId(), timestamp: Date.now() };
     await put('reviews', r);
     broadcast();
     return r;
@@ -78,7 +119,8 @@ const Store = (() => {
 
   /* ---- Ofertas / tratos ---- */
   async function addDeal(deal) {
-    const d = { ...deal, id: deal.id || crypto.randomUUID(), timestamp: Date.now() };
+    const timestamp = Date.now();
+    const d = { ...deal, id: deal.id || createId(), timestamp, updatedAt: timestamp, revision: 0 };
     await put('deals', d);
     broadcast();
     return d;
@@ -87,7 +129,29 @@ const Store = (() => {
   async function updateDeal(id, patch) {
     const deals = await getDeals();
     const deal = deals.find(d => d.id === id);
-    if (deal) { await put('deals', { ...deal, ...patch }); broadcast(); }
+    if (deal) {
+      const updatedAt = Math.max(Date.now(), (deal.updatedAt || deal.timestamp || 0) + 1);
+      await put('deals', { ...deal, ...patch, updatedAt, revision: (deal.revision || 0) + 1 });
+      broadcast();
+      return true;
+    }
+    return false;
+  }
+
+  async function getDealMessages(dealId) {
+    return (await getMany('messages'))
+      .filter(message => message.dealId === dealId)
+      .sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  async function addDealMessage(message) {
+    const deal = (await getDeals()).find(item => item.id === message.dealId && item.status === 'closed');
+    if (!deal) return false;
+    const entry = { ...message, id: message.id || createId(), timestamp: Date.now() };
+    await put('messages', entry);
+    window.dispatchEvent(new CustomEvent('rummage:store-updated'));
+    broadcast();
+    return entry;
   }
 
   /* ---- Perfil local ---- */
@@ -105,9 +169,12 @@ const Store = (() => {
   /* ---- Servidores públicos de señalización (lista editable) ---- */
   const SERVERS_KEY = 'rummage-signaling-servers';
   const DEFAULT_SERVERS = [
-    { name: 'Público Cloudflare', url: 'https://signal.cloudflarercs.com' },
-    { name: 'Públo de prueba', url: 'http://localhost:8787' },
+    { name: '94.143.137.242:8080', url: 'http://94.143.137.242:8080' },
   ];
+  const OLD_DEFAULT_URLS = new Set([
+    'https://signal.cloudflarercs.com',
+    'http://localhost:8787',
+  ]);
 
   function getSignalingServers() {
     let raw = localStorage.getItem(SERVERS_KEY);
@@ -115,7 +182,17 @@ const Store = (() => {
       localStorage.setItem(SERVERS_KEY, JSON.stringify(DEFAULT_SERVERS));
       return DEFAULT_SERVERS.slice();
     }
-    try { return JSON.parse(raw); } catch { return DEFAULT_SERVERS.slice(); }
+    try {
+      const stored = JSON.parse(raw);
+      if (!Array.isArray(stored)) throw new Error('lista no válida');
+      const servers = stored.filter(s => s && typeof s.url === 'string' &&
+        s.url !== DEFAULT_SERVERS[0].url && !OLD_DEFAULT_URLS.has(s.url));
+      servers.unshift(DEFAULT_SERVERS[0]);
+      if (servers.length !== stored.length || stored[0]?.url !== DEFAULT_SERVERS[0].url) {
+        localStorage.setItem(SERVERS_KEY, JSON.stringify(servers));
+      }
+      return servers;
+    } catch { return DEFAULT_SERVERS.slice(); }
   }
 
   function saveSignalingServers(list) {
@@ -127,8 +204,11 @@ const Store = (() => {
   /* ---- Diffusión de datos entre peers ---- */
   // Envía el snapshot actual por todos los DataChannel abiertos (P2P directo).
   async function broadcast() {
-    const msg = JSON.stringify({ type: 'sync', data: Store.snapshot() });
-    P2P.sendAll(msg);
+    try {
+      await P2P.sendAll({ type: 'sync', data: await snapshot() });
+    } catch (error) {
+      console.warn('[Store] No se pudo difundir el snapshot:', error);
+    }
   }
 
   /* ---- Snapshot completo para sincronizar con un peer ---- */
@@ -137,28 +217,56 @@ const Store = (() => {
       products: await getProducts(),
       reviews: await getReviews(),
       deals: await getDeals(),
+      messages: await getMany('messages'),
     };
   }
 
   /* ---- Fusionar datos recibidos de otro peer (gossip/torrent) ---- */
   async function merge(remoteData) {
     const local = await snapshot();
+    let changed = false;
+    const dealChanges = { added: [], updated: [] };
 
     for (const p of remoteData.products || []) {
-      if (!local.products.find(x => x.id === p.id)) await put('products', p);
+      const existing = local.products.find(x => x.id === p.id);
+      if (!existing || (p.revision || 0) > (existing.revision || 0) ||
+          ((p.revision || 0) === (existing.revision || 0) && (p.updatedAt || p.timestamp || 0) > (existing.updatedAt || existing.timestamp || 0))) {
+        await put('products', p);
+        changed = true;
+      }
     }
     for (const r of remoteData.reviews || []) {
-      if (!local.reviews.find(x => x.id === r.id)) await put('reviews', r);
+      if (!local.reviews.find(x => x.id === r.id)) { await put('reviews', r); changed = true; }
     }
     for (const d of remoteData.deals || []) {
-      if (!local.deals.find(x => x.id === d.id)) await put('deals', d);
+      const existing = local.deals.find(x => x.id === d.id);
+      if (!existing) {
+        await put('deals', d);
+        dealChanges.added.push(d);
+        changed = true;
+      } else if ((d.revision || 0) > (existing.revision || 0) ||
+          ((d.revision || 0) === (existing.revision || 0) && (d.updatedAt || d.timestamp || 0) > (existing.updatedAt || existing.timestamp || 0))) {
+        await put('deals', d);
+        dealChanges.updated.push({ previous: existing, current: d });
+        changed = true;
+      }
     }
+    const messageIds = new Set(local.messages.map(message => message.id));
+    for (const message of remoteData.messages || []) {
+      if (!messageIds.has(message.id)) {
+        await put('messages', message);
+        messageIds.add(message.id);
+        changed = true;
+      }
+    }
+    if (changed) window.dispatchEvent(new CustomEvent('rummage:store-updated', { detail: { dealChanges } }));
+    return changed;
   }
 
   return {
-    addProduct, getProducts,
+    addProduct, getProducts, updateProduct, deleteProduct, updateProductsByAuthor,
     addReview, getReviews,
-    addDeal, getDeals, updateDeal,
+    addDeal, getDeals, updateDeal, getDealMessages, addDealMessage,
     saveProfile, loadProfile,
     snapshot, merge, broadcast,
     getSignalingServers, saveSignalingServers,

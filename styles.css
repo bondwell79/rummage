@@ -62,6 +62,8 @@ body {
 }
 .tab:hover { color: var(--text); border-color: var(--accent); }
 .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.offer-badge { display: inline-flex; min-width: 20px; height: 20px; align-items: center; justify-content: center; margin-left: 4px; padding: 0 5px; border-radius: 10px; background: #d94d38; color: #fff; font-size: 11px; font-weight: 700; }
+.offer-badge[hidden] { display: none; }
 
 /* Main */
 main { max-width: 1100px; margin: 24px auto; padding: 0 18px; }
@@ -99,11 +101,22 @@ h2 { margin-top: 0; }
 .product .title { font-weight: 600; margin-bottom: 4px; }
 .product .price { color: var(--accent); font-size: 20px; font-weight: 700; }
 .product .meta { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; margin-top: 6px; }
+.seller-meta { display: flex; align-items: center; gap: 9px; margin-top: 12px; min-width: 0; }
+.seller-avatar { width: 36px; height: 36px; flex: 0 0 36px; border-radius: 50%; object-fit: cover; background: var(--panel); }
+.seller-avatar-fallback { display: inline-flex; align-items: center; justify-content: center; color: var(--accent); font-weight: 700; }
+.seller-details { min-width: 0; font-size: 13px; }
+.seller-name-line { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.seller-name-line > strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seller-city { color: var(--muted); white-space: nowrap; }
+.seller-rating { display: flex; align-items: center; gap: 4px; }
+.seller-rating .stars { letter-spacing: 0; cursor: default; }
+.seller-rating-value, .seller-rating-empty { color: var(--muted); font-size: 11px; }
 
 /* Cards / forms */
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
 .form-card label { display: block; margin-bottom: 14px; font-size: 14px; color: var(--muted); }
 .form-card input, .form-card select, .form-card textarea {
+  display: block;
   width: 100%;
   margin-top: 6px;
   background: var(--panel);
@@ -134,7 +147,9 @@ button.primary:hover { filter: brightness(1.08); }
 .close-btn { position: absolute; top: 8px; right: 12px; background: none; border: none; color: var(--muted); font-size: 30px; cursor: pointer; line-height: 1; }
 #modalContent img { width: 100%; max-height: 260px; object-fit: contain; border-radius: 10px; margin-bottom: 12px; background: #10142f; }
 #modalContent .price { font-size: 28px; color: var(--accent); font-weight: 700; }
-#modalContent .owner { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+#modalContent .product-detail-meta { margin-top: 6px; color: var(--muted); font-size: 12px; }
+#modalContent .product-condition { color: var(--ok); }
+#modalContent .owner { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 12px 0; }
 
 /* Rating stars */
 .stars { font-size: 24px; letter-spacing: 3px; color: var(--star); cursor: pointer; }
@@ -145,6 +160,33 @@ button.primary:hover { filter: brightness(1.08); }
 /* Lists */
 .list, .review-list { display: flex; flex-direction: column; gap: 12px; }
 .review-item { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.my-product { display: flex; align-items: center; gap: 14px; }
+.my-product img { width: 84px; height: 72px; flex: 0 0 84px; object-fit: cover; border-radius: 8px; background: var(--panel); }
+.my-product-info { flex: 1; min-width: 0; }
+.my-product-info .price { margin-top: 4px; color: var(--accent); font-weight: 700; }
+.my-product-actions { display: flex; gap: 8px; }
+.danger { background: #f0c9a8; color: #5a3a24; border: 1px solid var(--border); padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+.closed-deal { display: flex; width: 100%; align-items: center; gap: 16px; color: var(--text); text-align: left; cursor: pointer; }
+.closed-deal-image { width: 76px; height: 76px; flex: 0 0 76px; object-fit: cover; border-radius: 10px; background: var(--panel); }
+.closed-deal-info { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; }
+.closed-deal-price { color: var(--accent); font-weight: 700; white-space: nowrap; }
+.closed-deal-open { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.chat-card { max-width: 680px; }
+.chat-counterpart { margin-top: -8px; }
+.chat-messages { display: flex; flex-direction: column; gap: 10px; min-height: 220px; max-height: 48vh; overflow-y: auto; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+.chat-empty { margin: auto; }
+.chat-message { max-width: 85%; align-self: flex-start; padding: 9px 12px; border: 1px solid var(--border); border-radius: 12px 12px 12px 3px; background: var(--card); overflow-wrap: anywhere; }
+.chat-message.mine { align-self: flex-end; border-color: var(--accent-2); background: #ffe1cd; border-radius: 12px 12px 3px 12px; }
+.chat-message-meta { margin-bottom: 4px; color: var(--muted); font-size: 11px; }
+.chat-message-body { white-space: pre-wrap; }
+.chat-composer { display: flex; align-items: flex-end; gap: 14px; margin-top: 12px; }
+.chat-person { display: flex; width: 76px; flex: 0 0 76px; flex-direction: column; align-items: center; gap: 5px; text-align: center; }
+.chat-person-avatar { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; background: var(--panel); }
+.chat-person-fallback { display: inline-flex; align-items: center; justify-content: center; color: var(--accent); font-size: 22px; font-weight: 700; }
+.chat-person-name { width: 100%; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
+.chat-form { display: flex; flex: 1; align-items: flex-end; gap: 10px; min-width: 0; }
+.chat-form textarea { flex: 1; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; resize: vertical; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .hint { color: var(--muted); font-size: 14px; }
 
 /* Peers */
@@ -170,9 +212,27 @@ button.primary:hover { filter: brightness(1.08); }
 
 /* Profile */
 .profile-card { max-width: 520px; }
+.profile-avatar-preview { display: flex; width: 96px; height: 96px; align-items: center; justify-content: center; margin: 12px 0; overflow: hidden; border: 2px solid var(--border); border-radius: 50%; background: var(--panel); color: var(--accent); font-size: 36px; font-weight: 700; }
+.profile-avatar-preview img { width: 100%; height: 100%; object-fit: cover; }
 .rating-display { font-size: 34px; color: var(--star); }
 
 /* Toast */
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ok); color: #06211a; padding: 12px 20px; border-radius: 10px; font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,.4); z-index: 100; }
 .toast.error { background: var(--accent); color: #fff; }
 .toast.hidden { display: none; }
+
+@media (max-width: 560px) {
+  .my-product { align-items: flex-start; flex-wrap: wrap; }
+  .my-product-actions { width: 100%; }
+  .my-product-actions button { flex: 1; }
+  .closed-deal { align-items: flex-start; flex-wrap: wrap; gap: 8px 12px; }
+  .closed-deal-image { width: 64px; height: 64px; flex-basis: 64px; }
+  .closed-deal-info { flex-basis: calc(100% - 76px); }
+  .closed-deal-price { margin-left: 76px; }
+  .closed-deal-open { margin-left: auto; }
+  .chat-composer { gap: 8px; }
+  .chat-person { width: 58px; flex-basis: 58px; }
+  .chat-person-avatar { width: 44px; height: 44px; }
+  .chat-form { align-items: stretch; flex-direction: column; }
+  .chat-form button { align-self: flex-end; }
+}

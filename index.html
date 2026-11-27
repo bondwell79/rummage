@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>rummage — Compraventa P2P</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20261127-10" />
 </head>
 <body>
   <header class="topbar">
@@ -17,7 +17,9 @@
     <nav class="tabs">
       <button class="tab active" data-tab="marketplace">🛍️ Catálogo</button>
       <button class="tab" data-tab="publish">➕ Publicar</button>
-      <button class="tab" data-tab="deals">🤝 Ofertas</button>
+      <button class="tab" data-tab="my-products">Mis anuncios</button>
+      <button class="tab" data-tab="deals">🤝 Ofertas <span id="dealsBadge" class="offer-badge" aria-live="polite" hidden>0</span></button>
+      <button class="tab" data-tab="closed-deals">Compraventas cerradas</button>
       <button class="tab" data-tab="peers">🔗 Conectar</button>
       <button class="tab" data-tab="profile">👤 Perfil</button>
     </nav>
@@ -33,6 +35,7 @@
       <div class="toolbar">
         <input type="search" id="searchInput" placeholder="Buscar productos..." />
         <select id="categoryFilter"><option value="">Todas las categorías</option></select>
+        <select id="cityFilter"><option value="">Todas las ciudades</option></select>
         <select id="sortFilter">
           <option value="newest">Más recientes</option>
           <option value="price-asc">Precio: menor a mayor</option>
@@ -79,7 +82,14 @@
           <input type="file" name="image" accept="image/*" />
         </label>
         <button type="submit" class="primary">Publicar anuncio</button>
+        <button type="button" id="cancelProductEdit" class="ghost" hidden>Cancelar edición</button>
       </form>
+    </section>
+
+    <!-- MIS ANUNCIOS -->
+    <section id="tab-my-products" class="panel">
+      <h2>Mis anuncios</h2>
+      <div id="myProductsList" class="list"></div>
     </section>
 
     <!-- OFERTAS -->
@@ -88,14 +98,19 @@
       <div id="dealsList" class="list"></div>
     </section>
 
+    <!-- COMPRAVENTAS CERRADAS -->
+    <section id="tab-closed-deals" class="panel">
+      <h2>Compraventas cerradas</h2>
+      <p class="hint">Selecciona una compraventa para abrir el chat directo con la otra persona.</p>
+      <div id="closedDealsList" class="list"></div>
+    </section>
+
     <!-- CONECTAR PEERS -->
     <section id="tab-peers" class="panel">
       <h2>Conectar con otros peers</h2>
       <p class="hint">
-        La conexión es automática: elige un servidor público de señalización y pulsa
-        "Conectar automáticamente". La aplicación detecta sola a los demás peers conectados
-        y establece la conexión P2P por sí sola, sin salas ni códigos. Los datos se
-        sincronizan solos vía WebRTC.
+        La aplicación se conecta automáticamente al servidor de señalización al iniciarse,
+        detecta otros peers y sincroniza los datos mediante WebRTC.
       </p>
 
       <!-- Servidor de señalización -->
@@ -105,35 +120,95 @@
         </label>
         <button id="editServersBtn" class="ghost">⚙️ Gestionar servidores</button>
         <p class="hint" style="margin-top:8px">
-          Puedes añadir o dar de baja servidores. Los servidores locales (127.0.0.1 / localhost)
-          permiten probar la conexión entre pestañas sin internet.
+          Servidor preconfigurado: 94.143.137.242:8080.
         </p>
       </div>
 
       <!-- CONEXÍA AUTOMÁTICA -->
       <div class="card">
-        <h3>Conexía automática</h3>
-        <button id="autoConnectBtn" class="primary">🔗 Conectar automáticamente</button>
-        <p class="hint" style="margin-top:10px" id="autoStatus">No estás conectado a ningún peer.</p>
-      </div>
-
-      <!-- Peers conectados -->
-      <div class="card">
-        <h3>Peers conectados</h3>
-        <ul id="peersList"></ul>
+        <h3>Conexión automática</h3>
+        <button id="autoConnectBtn" class="primary">Conectando automáticamente...</button>
+        <p class="hint" style="margin-top:10px" id="autoStatus">Total de peers encontrados: 0</p>
       </div>
     </section>
 
     <!-- PERFIL -->
     <section id="tab-profile" class="panel">
-      <div class="card profile-card">
+      <div class="card profile-card form-card">
         <h2>Tu perfil</h2>
         <label>Nombre de usuario *
           <input type="text" id="profileName" maxlength="40" />
         </label>
+        <label>Ciudad
+          <select id="profileCity">
+            <option value="">Selecciona tu ciudad</option>
+            <optgroup label="Andalucía">
+              <option>Almería</option><option>Cádiz</option><option>Córdoba</option><option>Granada</option>
+              <option>Huelva</option><option>Jaén</option><option>Málaga</option><option>Sevilla</option>
+            </optgroup>
+            <optgroup label="Aragón">
+              <option>Huesca</option><option>Teruel</option><option>Zaragoza</option>
+            </optgroup>
+            <optgroup label="Asturias">
+              <option>Oviedo</option>
+            </optgroup>
+            <optgroup label="Illes Balears">
+              <option>Palma</option>
+            </optgroup>
+            <optgroup label="Canarias">
+              <option>Las Palmas de Gran Canaria</option><option>Santa Cruz de Tenerife</option>
+            </optgroup>
+            <optgroup label="Cantabria">
+              <option>Santander</option>
+            </optgroup>
+            <optgroup label="Castilla-La Mancha">
+              <option>Albacete</option><option>Ciudad Real</option><option>Cuenca</option>
+              <option>Guadalajara</option><option>Toledo</option>
+            </optgroup>
+            <optgroup label="Castilla y León">
+              <option>Ávila</option><option>Burgos</option><option>León</option><option>Palencia</option>
+              <option>Salamanca</option><option>Segovia</option><option>Soria</option>
+              <option>Valladolid</option><option>Zamora</option>
+            </optgroup>
+            <optgroup label="Cataluña">
+              <option>Barcelona</option><option>Girona</option><option>Lleida</option><option>Tarragona</option>
+            </optgroup>
+            <optgroup label="Comunidad Valenciana">
+              <option>Alicante</option><option>Castellón de la Plana</option><option>Valencia</option>
+            </optgroup>
+            <optgroup label="Extremadura">
+              <option>Badajoz</option><option>Cáceres</option>
+            </optgroup>
+            <optgroup label="Galicia">
+              <option>A Coruña</option><option>Lugo</option><option>Ourense</option><option>Pontevedra</option>
+            </optgroup>
+            <optgroup label="Comunidad de Madrid">
+              <option>Madrid</option>
+            </optgroup>
+            <optgroup label="Región de Murcia">
+              <option>Murcia</option>
+            </optgroup>
+            <optgroup label="Navarra">
+              <option>Pamplona</option>
+            </optgroup>
+            <optgroup label="País Vasco">
+              <option>Bilbao</option><option>Donostia-San Sebastián</option><option>Vitoria-Gasteiz</option>
+            </optgroup>
+            <optgroup label="La Rioja">
+              <option>Logroño</option>
+            </optgroup>
+            <optgroup label="Ciudades autónomas">
+              <option>Ceuta</option><option>Melilla</option>
+            </optgroup>
+          </select>
+        </label>
         <label>Foto de perfil
           <input type="file" id="profileImage" accept="image/*" />
         </label>
+        <div class="profile-avatar-preview" aria-label="Foto de perfil actual">
+          <img id="profilePreview" alt="Foto de perfil actual" hidden />
+          <span id="profileAvatarFallback" aria-hidden="true">?</span>
+        </div>
         <button id="saveProfileBtn" class="primary">Guardar perfil</button>
         <div class="rating-summary">
           <h3>Tu puntuación media</h3>
@@ -156,6 +231,14 @@
     </div>
   </div>
 
+  <!-- Chat de una compraventa cerrada -->
+  <div id="chatModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="chatTitle">
+    <div class="modal-card chat-card">
+      <button class="close-btn" id="closeChatModal" aria-label="Cerrar chat">&times;</button>
+      <div id="chatContent"></div>
+    </div>
+  </div>
+
   <!-- Modal de gestión de servidores públicos -->
   <div id="serversModal" class="modal hidden">
     <div class="modal-card">
@@ -164,8 +247,8 @@
       <p class="hint">Añade servidores o elimina los que ya no quieras usar. Cada sala usa el servidor seleccionado.</p>
       <ul id="serversList" class="servers-list"></ul>
       <form id="addServerForm" class="add-server-form">
-        <input type="text" id="newServerName" placeholder="Nombre (ej. Público Cloudflare)" />
-        <input type="url" id="newServerUrl" placeholder="https://signal.ejemplo.com" required />
+        <input type="text" id="newServerName" placeholder="Nombre del servidor" />
+        <input type="url" id="newServerUrl" placeholder="http://host:8080" required />
         <button type="submit" class="primary">Añadir servidor</button>
       </form>
     </div>
@@ -174,8 +257,8 @@
   <!-- Toast -->
   <div id="toast" class="toast hidden"></div>
 
-  <script src="webrtc.js"></script>
-  <script src="store.js"></script>
-  <script src="app.js"></script>
+  <script src="webrtc.js?v=20261127-7"></script>
+  <script src="store.js?v=20261127-8"></script>
+  <script src="app.js?v=20261127-13"></script>
 </body>
 </html>

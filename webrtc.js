@@ -37,7 +37,13 @@ const P2P = (() => {
   }
 
   async function initLocalId() {
-    if (!localId) localId = randomId();
+    if (!localId) {
+      localId = localStorage.getItem('rummage-peer-id');
+      if (!localId) {
+        localId = randomId();
+        localStorage.setItem('rummage-peer-id', localId);
+      }
+    }
     return localId;
   }
 
@@ -70,6 +76,61 @@ const P2P = (() => {
     const res = await fetch(base + '/' + code, { method: 'GET' });
     if (!res.ok) throw new Error('error del servidor (' + res.status + ')');
     return res.json();
+  }
+
+  // ICE candidates
+  async function apiPostCandidate(baseUrl, code, candidate, from) {
+    const base = serverBase(baseUrl).replace(/\/api\/session$/, '');
+    const res = await fetch(base + '/api/session/' + code + '/candidates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ candidate, from }),
+    });
+    if (!res.ok) throw new Error('error del servidor (' + res.status + ')');
+    return res.json();
+  }
+
+  async function apiGetCandidates(baseUrl, code, from) {
+    const base = serverBase(baseUrl).replace(/\/api\/session$/, '');
+    const url = new URL(base + '/api/session/' + code + '/candidates');
+    url.searchParams.set('from', from);
+    const res = await fetch(url.href, { method: 'GET' });
+    if (!res.ok) throw new Error('error del servidor (' + res.status + ')');
+    return res.json();
+  }
+
+  function configureIceSignaling(pc, serverUrl, code, localRole) {
+    const remoteRole = localRole === 'offerer' ? 'answerer' : 'offerer';
+    const seenCandidates = new Set();
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        apiPostCandidate(serverUrl, code, event.candidate.toJSON(), localRole).catch((error) => {
+          console.warn('[P2P] No se pudo publicar candidato ICE:', error.message);
+        });
+      }
+    };
+
+    return async function pollRemoteCandidates() {
+      try {
+        const data = await apiGetCandidates(serverUrl, code, remoteRole);
+        for (const candidate of data.candidates || []) {
+          const key = [candidate.candidate, candidate.sdpMid, candidate.sdpMLineIndex].join('|');
+          if (seenCandidates.has(key)) continue;
+          seenCandidates.add(key);
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch (error) {
+            console.warn('[P2P] No se pudo añadir candidato ICE:', error.message);
+          }
+        }
+      } catch (error) {
+        console.warn('[P2P] Error consultando candidatos ICE:', error.message);
+      }
+
+      if (!['connected', 'completed', 'failed', 'closed'].includes(pc.iceConnectionState)) {
+        setTimeout(pollRemoteCandidates, 500);
+      }
+    };
   }
 
   // Polling periódico contra el servidor hasta que haya algo o cancelemos.
@@ -142,25 +203,38 @@ const P2P = (() => {
   // El peer con menor peerId actúa como anfitrión (publica la oferta); el otro
   // responde con la respuesta. Ambos usan el mismo código de sesión.
   async function establishConnection(serverUrl, code, isInviter) {
+    console.log('[P2P] establishConnection', { code, isInviter });
+    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+    const localRole = isInviter ? 'offerer' : 'answerer';
+    const pollRemoteCandidates = configureIceSignaling(pc, serverUrl, code, localRole);
+
     if (isInviter) {
-      const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+      console.log('[P2P] Inviter: creando offer');
       await configure(pc); // crea DataChannel de envío
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      await waitForIce(pc);
+      console.log('[P2P] Inviter: offer creada');
+      console.log('[P2P] Inviter: posteando offer');
       await apiPost(serverUrl, code, { offer: pc.localDescription });
-      const answer = await pollFor(serverUrl, code, d => d.answer, 45000);
+      console.log('[P2P] Inviter: polling answer...');
+      const response = await pollFor(serverUrl, code, d => d.answer && d.answer.type === 'answer', 45000);
+      const answer = response.answer;
+      console.log('[P2P] Inviter: recibida answer');
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      pollRemoteCandidates();
       registerPeer(code, pc);
     } else {
-      const offer = await pollFor(serverUrl, code, d => d.offer, 45000);
-      const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+      console.log('[P2P] No-inviter: polling offer...');
+      const response = await pollFor(serverUrl, code, d => d.offer && d.offer.type === 'offer', 45000);
+      const offer = response.offer;
+      console.log('[P2P] No-inviter: recibida offer');
       await configure(pc, false);
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      await waitForIce(pc);
+      console.log('[P2P] No-inviter: posteando answer');
       await apiPost(serverUrl, code, { answer: pc.localDescription });
+      pollRemoteCandidates();
       registerPeer(code, pc);
     }
   }
@@ -169,17 +243,20 @@ const P2P = (() => {
   async function autoConnect(serverUrl) {
     if (autoConn && !autoConn.stop) return autoConn;
     const reg = await apiPostPeer(serverUrl);
-    autoConn = { serverUrl, peerId: reg.peerId, mySessionId: reg.sessionId, connected: new Set(), stop: false };
+    autoConn = { serverUrl, peerId: reg.peerId, mySessionId: reg.sessionId, connected: new Set(), foundCount: 0, stop: false };
 
     async function pollPeers() {
       if (autoConn.stop) return;
       try {
         const list = await apiGetPeers(serverUrl, autoConn.peerId);
+        autoConn.foundCount = list.length;
+        console.log('[P2P] pollPeers: myPeerId=', autoConn.peerId, 'mySessionId=', autoConn.mySessionId, 'peers=', list);
         for (const p of list) {
           if (autoConn.connected.has(p.peerId)) continue;
           // Determinístico: el peer con menor ID es el anfitrión de la sesión.
           const isInviter = autoConn.peerId < p.peerId;
           const code = isInviter ? autoConn.mySessionId : p.sessionId;
+          console.log('[P2P] Intentando conectar con', p.peerId, 'isInviter=', isInviter, 'code=', code);
           try {
             await establishConnection(serverUrl, code, isInviter);
             autoConn.connected.add(p.peerId);
@@ -205,7 +282,7 @@ const P2P = (() => {
   // Estado del descubrimiento automático (para UI).
   function autoConnectState() {
     if (!autoConn || autoConn.stop) return { active: false, count: 0 };
-    return { active: true, count: autoConn.connected.size };
+    return { active: true, count: autoConn.foundCount };
   }
 
   /* ---- INVITADO: crea sala + oferta, espera la respuesta del anfitrión ---- */
@@ -218,16 +295,21 @@ const P2P = (() => {
       await configure(pc); // crea DataChannel de envío
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      await waitForIce(pc);
 
       let settled = false;
       let peerPc = null;
       const bc = startLocalSignaling(room);
 
+      // ICE candidates via BroadcastChannel
+      pc.onicecandidate = (e) => { if (e.candidate) bc.postMessage({ type: 'candidate', payload: e.candidate.toJSON() }); };
+
       // El anfitrión responderá cuando reciba la oferta. Escuchamos su respuesta.
       const answerPromise = new Promise((resolve, reject) => {
         const t = setTimeout(() => !settled && reject(new Error('esperando respuesta del peer...')), 45000);
-        bc.setHandlers({ answer: (a) => { if (!settled) { settled = true; clearTimeout(t); resolve(a); } } });
+        bc.setHandlers({
+          answer: (a) => { if (!settled) { settled = true; clearTimeout(t); resolve(a); } },
+          candidate: (c) => { try { pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) {} }
+        });
       });
 
       // Retransmitimos la oferta periódicamente hasta obtener respuesta.
@@ -252,14 +334,16 @@ const P2P = (() => {
     const sess = await apiPost(serverUrl, null, {});
     const code = sess.code;
     const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+    const pollRemoteCandidates = configureIceSignaling(pc, serverUrl, code, 'offerer');
+
     await configure(pc);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    await waitForIce(pc);
-
     await apiPost(serverUrl, code, { offer: pc.localDescription });
-    const answer = await pollFor(serverUrl, code, d => d.answer, 45000);
+    const response = await pollFor(serverUrl, code, d => d.answer && d.answer.type === 'answer', 45000);
+    const answer = response.answer;
     await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    pollRemoteCandidates();
     registerPeer('server', pc);
     return { code, pc };
   }
@@ -276,12 +360,18 @@ const P2P = (() => {
       let settled = false;
       const bc = startLocalSignaling(room);
 
+      // ICE candidates via BroadcastChannel
+      pc.onicecandidate = (e) => { if (e.candidate) bc.postMessage({ type: 'candidate', payload: e.candidate.toJSON() }); };
+
       // Escuchamos la oferta y generamos la respuesta.
       const offerPromise = new Promise((resolveOffer) => {
         const t = setTimeout(() => !settled && resolveOffer(null), 45000);
-        bc.setHandlers({ offer: async (o) => {
-          if (!settled) { await pc.setRemoteDescription(new RTCSessionDescription(o)); settled = true; clearTimeout(t); }
-        } });
+        bc.setHandlers({
+          offer: async (o) => {
+            if (!settled) { await pc.setRemoteDescription(new RTCSessionDescription(o)); settled = true; clearTimeout(t); }
+          },
+          candidate: (c) => { try { pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) {} }
+        });
       });
 
       const answerPromise = new Promise((resolveAnswer, rejectAnswer) => {
@@ -292,7 +382,6 @@ const P2P = (() => {
           try {
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            await waitForIce(pc);
             bc.sendAnswer(pc.localDescription);
             answerSent = true;
           } catch (e) { rejectAnswer(e); }
@@ -315,14 +404,17 @@ const P2P = (() => {
     }
 
     // ---- Servidor real: esperamos la oferta, respondemos ----
-    const offer = await pollFor(serverUrl, code, d => d.offer, 45000);
+    const response = await pollFor(serverUrl, code, d => d.offer && d.offer.type === 'offer', 45000);
+    const offer = response.offer;
     const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+    const pollRemoteCandidates = configureIceSignaling(pc, serverUrl, code, 'answerer');
+
     await configure(pc, false);
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    await waitForIce(pc);
     await apiPost(serverUrl, code, { answer: pc.localDescription });
+    pollRemoteCandidates();
     registerPeer('server', pc);
     return pc;
   }
@@ -333,7 +425,6 @@ const P2P = (() => {
     await configure(pc);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    await waitForIce(pc);
     return toCode({ type: 'offer', sdp: pc.localDescription.sdp, from: localId });
   }
 
@@ -346,7 +437,6 @@ const P2P = (() => {
     await pc.setRemoteDescription(new RTCSessionDescription(payload));
     const dc = await pc.createAnswer();
     await pc.setLocalDescription(dc);
-    await waitForIce(pc);
     registerPeer(payload.from, pc);
     return toCode({ type: 'answer', sdp: pc.localDescription.sdp, from: localId });
   }
@@ -384,43 +474,103 @@ const P2P = (() => {
   }
 
   function bindChannel(dc) {
-    dc.onopen = () => {
+    const incomingTransfers = new Map();
+    dc.bufferedAmountLowThreshold = 256 * 1024;
+
+    dc.onopen = async () => {
       console.log('[P2P] DataChannel abierto');
       openChannels.add(dc);
-      const msg = JSON.stringify({ type: 'sync', data: Store.snapshot() });
-      if (dc.readyState === 'open') dc.send(msg);
-    };
-    dc.onclose = () => { openChannels.delete(dc); renderPeers(); };
-    dc.onmessage = (event) => {
       try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'sync' && typeof msg.data === 'object') {
-          Store.merge(msg.data);
-          const reply = JSON.stringify({ type: 'sync', data: Store.snapshot() });
-          if (dc.readyState === 'open') dc.send(reply);
+        const data = await Store.snapshot();
+        await sendChannelMessage(dc, { type: 'sync', data });
+      } catch (error) {
+        console.warn('[P2P] No se pudo enviar el snapshot inicial:', error.message);
+      }
+    };
+    dc.onclose = () => {
+      openChannels.delete(dc);
+      for (const transfer of incomingTransfers.values()) clearTimeout(transfer.timer);
+      incomingTransfers.clear();
+      renderPeers();
+    };
+    dc.onmessage = async (event) => {
+      try {
+        let msg = JSON.parse(event.data);
+        if (msg.type === 'sync-chunk') {
+          if (!Number.isInteger(msg.index) || !Number.isInteger(msg.total) ||
+              msg.index < 0 || msg.index >= msg.total || msg.total > 8192 ||
+              typeof msg.transferId !== 'string' || typeof msg.data !== 'string') return;
+
+          let transfer = incomingTransfers.get(msg.transferId);
+          if (!transfer) {
+            transfer = { parts: new Array(msg.total), received: 0, length: 0, timer: null };
+            transfer.timer = setTimeout(() => incomingTransfers.delete(msg.transferId), 120000);
+            incomingTransfers.set(msg.transferId, transfer);
+          }
+          if (transfer.parts.length !== msg.total || transfer.parts[msg.index] !== undefined) return;
+          transfer.parts[msg.index] = msg.data;
+          transfer.received++;
+          transfer.length += msg.data.length;
+          if (transfer.length > 64 * 1024 * 1024) {
+            clearTimeout(transfer.timer);
+            incomingTransfers.delete(msg.transferId);
+            throw new Error('snapshot superior al límite de 64 MB');
+          }
+          if (transfer.received !== transfer.parts.length) return;
+
+          clearTimeout(transfer.timer);
+          incomingTransfers.delete(msg.transferId);
+          msg = JSON.parse(transfer.parts.join(''));
+        }
+        if (msg.type === 'sync' && msg.data && typeof msg.data === 'object') {
+          const changed = await Store.merge(msg.data);
+          if (changed && dc.readyState === 'open') {
+            const data = await Store.snapshot();
+            await sendChannelMessage(dc, { type: 'sync', data });
+          }
         }
       } catch (e) { console.warn('[P2P] Mensaje P2P no parseado:', e); }
     };
   }
 
-  function sendAll(message) {
+  async function sendChannelMessage(dc, message) {
     const payload = JSON.stringify(message);
-    for (const dc of openChannels) {
-      if (dc.readyState === 'open') dc.send(payload);
+    const chunkSize = 8 * 1024;
+    const maxPayloadSize = 64 * 1024 * 1024;
+    if (payload.length > maxPayloadSize) throw new Error('snapshot superior al límite de 64 MB');
+
+    async function sendRaw(data) {
+      while (dc.readyState === 'open' && dc.bufferedAmount > dc.bufferedAmountLowThreshold) {
+        await new Promise((resolve) => {
+          const check = () => {
+            dc.removeEventListener('bufferedamountlow', check);
+            dc.removeEventListener('close', check);
+            resolve();
+          };
+          dc.addEventListener('bufferedamountlow', check, { once: true });
+          dc.addEventListener('close', check, { once: true });
+          if (dc.readyState !== 'open' || dc.bufferedAmount <= dc.bufferedAmountLowThreshold) check();
+        });
+      }
+      if (dc.readyState === 'open') dc.send(data);
+    }
+
+    if (payload.length <= chunkSize) return sendRaw(payload);
+    const transferId = randomId();
+    const total = Math.ceil(payload.length / chunkSize);
+    for (let index = 0; index < total && dc.readyState === 'open'; index++) {
+      await sendRaw(JSON.stringify({
+        type: 'sync-chunk',
+        transferId,
+        index,
+        total,
+        data: payload.slice(index * chunkSize, (index + 1) * chunkSize),
+      }));
     }
   }
 
-  async function waitForIce(pc) {
-    if (pc.iceConnectionState === 'checking' || pc.iceConnectionState === 'connected') return;
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 5000);
-      pc.oniceconnectionstatechange = () => {
-        if (['connected', 'completed', 'checking', 'disconnected'].includes(pc.iceConnectionState)) {
-          clearTimeout(timer);
-          resolve();
-        }
-      };
-    });
+  async function sendAll(message) {
+    await Promise.all(Array.from(openChannels, (dc) => sendChannelMessage(dc, message)));
   }
 
   function registerPeer(id, pc) {

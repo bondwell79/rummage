@@ -23,7 +23,7 @@ HOST = "0.0.0.0"
 TTL_SEC = 15 * 60  # 15 minutos
 
 # Almacenes en memoria y bloqueo para seguridad entre hilos
-sessions = {}        # code -> {"offer": ..., "answer": ..., "lastSeen": float}
+sessions = {}        # code -> {"offer": ..., "answer": ..., "candidates": [], "lastSeen": float}
 peers_presence = {}  # peerId -> {"sessionId": str, "lastSeen": float}
 lock = threading.Lock()
 
@@ -63,7 +63,10 @@ class SignalingHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (ConnectionResetError, BrokenPipeError):
+            pass
 
     def _read_json(self) -> dict:
         content_length = int(self.headers.get("Content-Length", 0))
@@ -76,8 +79,13 @@ class SignalingHandler(BaseHTTPRequestHandler):
             return {}
 
     def log_message(self, format, *args):
-        # Silencia los logs por defecto de cada petición HTTP para igualar la salida de Node.js
         pass
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, BrokenPipeError):
+            pass
 
     # ---- CORS Preflight ----
     def do_OPTIONS(self):
@@ -107,9 +115,26 @@ class SignalingHandler(BaseHTTPRequestHandler):
             with lock:
                 s = sessions.get(code)
                 if not s:
+                    print(f"[signal] GET session {code} -> 404 not found")
                     return self._send(404, {"error": "sesión no encontrada"})
                 s["lastSeen"] = time.time()
-                return self._send(200, {"code": code, "offer": s["offer"], "answer": s["answer"]})
+                has_offer = s["offer"] is not None
+                has_answer = s["answer"] is not None
+                print(f"[signal] GET session {code} -> offer={has_offer} answer={has_answer}")
+                return self._send(200, {"code": code, "offer": s["offer"], "answer": s["answer"], "candidates": s.get("candidates", [])})
+
+        # GET /api/session/:code/candidates
+        m_cand = re.match(r"^/api/session/([A-Z0-9]+)/candidates$", path, re.IGNORECASE)
+        if m_cand and self.command == "GET":
+            code = m_cand.group(1).upper()
+            sender = query.get("from", [None])[0]
+            with lock:
+                s = sessions.get(code)
+                if not s:
+                    return self._send(404, {"error": "sesión no encontrada"})
+                s["lastSeen"] = time.time()
+                candidates = [item["candidate"] for item in s.get("candidates", []) if item.get("from") == sender]
+                return self._send(200, {"candidates": candidates})
 
         # GET /health
         if path == "/health":
@@ -130,13 +155,14 @@ class SignalingHandler(BaseHTTPRequestHandler):
             session_id = short_code()
             with lock:
                 peers_presence[peer_id] = {"sessionId": session_id, "lastSeen": time.time()}
+                sessions[session_id] = {"offer": None, "answer": None, "candidates": [], "lastSeen": time.time()}
             return self._send(201, {"peerId": peer_id, "sessionId": session_id})
 
         # POST /api/session
         if path == "/api/session":
             code = short_code()
             with lock:
-                sessions[code] = {"offer": None, "answer": None, "lastSeen": time.time()}
+                sessions[code] = {"offer": None, "answer": None, "candidates": [], "lastSeen": time.time()}
             return self._send(201, {"code": code, "sessionId": code})
 
         # POST /api/session/:code
@@ -150,10 +176,30 @@ class SignalingHandler(BaseHTTPRequestHandler):
                     return self._send(404, {"error": "sesión no encontrada"})
                 if "offer" in body:
                     s["offer"] = body["offer"]
+                    print(f"[signal] POST offer -> session {code}")
                 if "answer" in body:
                     s["answer"] = body["answer"]
+                    print(f"[signal] POST answer -> session {code}")
+                if "candidate" in body:
+                    s.setdefault("candidates", []).append(body["candidate"])
                 s["lastSeen"] = time.time()
-                return self._send(200, {"code": code, "offer": s["offer"], "answer": s["answer"]})
+                return self._send(200, {"code": code, "offer": s["offer"], "answer": s["answer"], "candidates": s.get("candidates", [])})
+
+        # POST /api/session/:code/candidates
+        m_cand = re.match(r"^/api/session/([A-Z0-9]+)/candidates$", path, re.IGNORECASE)
+        if m_cand:
+            code = m_cand.group(1).upper()
+            body = self._read_json()
+            sender = body.get("from")
+            if sender not in ("offerer", "answerer") or not isinstance(body.get("candidate"), dict):
+                return self._send(400, {"error": "candidato ICE no válido"})
+            with lock:
+                s = sessions.get(code)
+                if not s:
+                    return self._send(404, {"error": "sesión no encontrada"})
+                s.setdefault("candidates", []).append({"from": sender, "candidate": body["candidate"]})
+                s["lastSeen"] = time.time()
+                return self._send(200, {"ok": True})
 
         return self._send(404, {"error": "ruta no encontrada"})
 
