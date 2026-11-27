@@ -181,11 +181,6 @@ const Store = (() => {
   const DEFAULT_SERVERS = [
     { name: '94.143.137.242:8080', url: 'http://94.143.137.242:8080' },
   ];
-  const OLD_DEFAULT_URLS = new Set([
-    'https://signal.cloudflarercs.com',
-    'http://localhost:8787',
-  ]);
-
   function getSignalingServers() {
     let raw = localStorage.getItem(SERVERS_KEY);
     if (!raw) {
@@ -196,7 +191,7 @@ const Store = (() => {
       const stored = JSON.parse(raw);
       if (!Array.isArray(stored)) throw new Error('lista no válida');
       const servers = stored.filter(s => s && typeof s.url === 'string' &&
-        s.url !== DEFAULT_SERVERS[0].url && !OLD_DEFAULT_URLS.has(s.url));
+        s.url !== DEFAULT_SERVERS[0].url);
       servers.unshift(DEFAULT_SERVERS[0]);
       if (servers.length !== stored.length || stored[0]?.url !== DEFAULT_SERVERS[0].url) {
         localStorage.setItem(SERVERS_KEY, JSON.stringify(servers));
